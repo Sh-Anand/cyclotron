@@ -136,7 +136,7 @@ def is_rtype(op: int) -> bool:
 
 
 def is_stype(op: int) -> bool:
-    return op == STORE
+    return (op & 0x7F) == STORE
 
 
 def is_btype(op: int) -> bool:
