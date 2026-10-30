@@ -20,6 +20,7 @@ pub struct CSRFile {
     block_idx: (u32, u32, u32),
     thread_idx: (u32, u32, u32),
     bp: u32,
+    smem_base: u32,
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -126,6 +127,7 @@ impl CSRFile {
             0xfc7, self.thread_idx.1; // thread_idx.y
             0xfc8, self.thread_idx.2; // thread_idx.z
             0xfc9, self.bp; // base pointer
+            0xfca, self.smem_base; // smem base
         ])
     }
 
@@ -205,9 +207,11 @@ impl CSRFile {
         block_idx: (u32, u32, u32),
         thread_idx: (u32, u32, u32),
         bp: u32,
+        smem_base: u32,
     ) {
         self.block_idx = block_idx;
         self.thread_idx = thread_idx;
         self.bp = bp;
+        self.smem_base = smem_base;
     }
 }

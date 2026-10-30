@@ -588,11 +588,12 @@ impl Warp {
         block_idx: (u32, u32, u32),
         thread_idxs: &Vec<(u32, u32, u32)>,
         bp: u32,
+        smem_base: u32,
     ) {
         assert!(thread_idxs.len() <= self.base.state.csr_file.len());
         assert!(thread_idxs.len() > 0);
         for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
-            csr_file.set_block_thread_bp(block_idx, *thread_idx, bp);
+            csr_file.set_block_thread_bp(block_idx, *thread_idx, bp, smem_base);
         }
     }
 
