@@ -69,6 +69,8 @@ pub struct MemRequest {
     pub is_sext: bool,
     pub is_store: bool,
     pub is_smem: bool,
+    pub is_amo: bool,
+    pub amo_op: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -265,7 +267,7 @@ impl Warp {
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         match decoded.opcode {
-            Opcode::LOAD | Opcode::STORE => {
+            Opcode::LOAD | Opcode::STORE | Opcode::AMO => {
                 if let Some(issue) = self.build_timed_mem_issue(&decoded, tmask) {
                     if self.route_mem_to_smem(&decoded) {
                         if self
@@ -528,7 +530,23 @@ impl Warp {
         let addr_aligned = addr >> 2 << 2;
         let size = mem_req.size;
 
-        if mem_req.is_store {
+        if mem_req.is_amo {
+            let operand = mem_req.data.expect("amo req missing operand");
+            let old_bytes = mem.read_n::<4>(addr_aligned as usize).expect("amo read failed");
+            let old_val = u32::from_le_bytes(old_bytes);
+            let new_val = match mem_req.amo_op {
+                0b00000 => old_val.wrapping_add(operand), // amoadd
+                0b00001 => operand,                       // amoswap
+                _ => panic!("unsupported AMO op {}", mem_req.amo_op),
+            };
+            mem.write(addr_aligned as usize, &new_val.to_le_bytes())
+                .expect("amo write failed");
+
+            MemResponse {
+                data: Some(old_bytes),
+                is_sext: false,
+            }
+        } else if mem_req.is_store {
             let store_data = mem_req.data.expect("store req missing a data field");
             let store_data_bytes = store_data.to_le_bytes();
 
@@ -579,7 +597,7 @@ impl Warp {
     }
 
     fn build_timed_mem_issue(&self, decoded: &DecodedInst, tmask: u32) -> Option<TimedMemIssue> {
-        if decoded.opcode != Opcode::LOAD && decoded.opcode != Opcode::STORE {
+        if decoded.opcode != Opcode::LOAD && decoded.opcode != Opcode::STORE && decoded.opcode != Opcode::AMO {
             warn!(
                 "warp {} mem issue requested for non-memory opcode=0x{:02x}",
                 self.wid, decoded.opcode
@@ -593,13 +611,14 @@ impl Warp {
         }
 
         let bytes_per_lane = 1u32 << (decoded.f3 & 3);
-        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, decoded.imm32, tmask);
+        let imm = if decoded.opcode == Opcode::AMO { 0 } else { decoded.imm32 };
+        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, imm, tmask);
 
         Some(TimedMemIssue {
             opcode: decoded.opcode,
             opext: decoded.opext,
             rs1_addr: decoded.rs1_addr,
-            imm32: decoded.imm32,
+            imm32: imm,
             active_lanes,
             bytes_per_lane,
             lane_addrs,
@@ -613,7 +632,7 @@ impl Warp {
         timing_model: &mut CoreTimingModel,
         now: Cycle,
     ) -> Result<(), ()> {
-        debug_assert!(issue.opcode == Opcode::LOAD || issue.opcode == Opcode::STORE);
+        debug_assert!(issue.opcode == Opcode::LOAD || issue.opcode == Opcode::STORE || issue.opcode == Opcode::AMO);
         if issue.opext == 1 {
             warn!(
                 "warp {} smem-routed request reached gmem issuer (opcode=0x{:02x}, rs1={}, imm={})",
@@ -622,11 +641,12 @@ impl Warp {
             return Ok(());
         }
         let total_bytes = issue.bytes_per_lane.saturating_mul(issue.active_lanes);
+        let is_load = issue.opcode == Opcode::LOAD || issue.opcode == Opcode::AMO;
         let mut request = GmemRequest::new(
             self.wid,
             total_bytes.max(1),
             issue.active_lanes,
-            issue.opcode == Opcode::LOAD,
+            is_load,
         );
         request.addr = issue.lane_addrs.iter().copied().min().unwrap_or(0);
         request.lane_addrs = Some(issue.lane_addrs.clone());
@@ -639,6 +659,7 @@ impl Warp {
 
     fn route_mem_to_smem(&self, decoded: &DecodedInst) -> bool {
         (decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE) && decoded.opext == 1
+        // AMO is always global (ext2=0), never routed to shared memory
     }
 
     fn collect_lane_addrs(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Vec<u64> {

@@ -450,6 +450,7 @@ impl CoreTimingModel {
 fn exec_unit_for(inst: &IssuedInst) -> Option<ExecUnitKind> {
     if inst.opcode == Opcode::LOAD
         || inst.opcode == Opcode::STORE
+        || inst.opcode == Opcode::AMO
         || inst.opcode == Opcode::MISC_MEM
         || inst.opcode == Opcode::LOAD_FP
         || inst.opcode == Opcode::STORE_FP

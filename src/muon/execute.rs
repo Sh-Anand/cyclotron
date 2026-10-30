@@ -25,7 +25,7 @@ impl Opcode {
     pub const STORE: u8 = 0b0100011u8;
     pub const STORE_FP: u8 = 0b0100111u8;
     pub const CUSTOM1: u8 = 0b0101011u8;
-    //  pub const Amo     : u8 = 0b0101111u8;
+    pub const AMO: u8 = 0b0101111u8;
     pub const OP: u8 = 0b0110011u8;
     pub const LUI: u8 = 0b0110111u8;
     pub const OP32: u8 = 0b0111011u8;
@@ -507,6 +507,8 @@ impl ExecuteUnit {
             is_sext: sext,
             is_store: false,
             is_smem: shared_load,
+            is_amo: false,
+            amo_op: 0,
         })
     }
 
@@ -544,6 +546,32 @@ impl ExecuteUnit {
             is_sext: false,
             is_store: true,
             is_smem: shared_store,
+            is_amo: false,
+            amo_op: 0,
+        })
+    }
+
+    fn amo(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
+        let funct5 = issued_inst.f7 >> 2;
+        let mnemonic = match funct5 {
+            0b00000 => "amoadd.w",
+            0b00001 => "amoswap.w",
+            _ => panic!("unsupported AMO funct5={:#07b}", funct5),
+        };
+        debug!("{}", mnemonic);
+
+        let addr = issued_inst.rs1_data[lane].unwrap();
+        let data = issued_inst.rs2_data[lane].unwrap();
+
+        Some(MemRequest {
+            addr,
+            data: Some(data),
+            size: 4,
+            is_sext: false,
+            is_store: false,
+            is_smem: false,
+            is_amo: true,
+            amo_op: funct5,
         })
     }
 
@@ -770,6 +798,11 @@ impl ExecuteUnit {
             Opcode::STORE => (
                 empty,
                 Self::collect_lanes(|lane| ExecuteUnit::store(&issued, lane), tmask, rf),
+                empty_swb,
+            ),
+            Opcode::AMO => (
+                empty,
+                Self::collect_lanes(|lane| ExecuteUnit::amo(&issued, lane), tmask, rf),
                 empty_swb,
             ),
             Opcode::MISC_MEM => {
