@@ -340,8 +340,8 @@ fn smem_request_tracks_pending_and_stats() {
 #[test]
 fn smem_crossbar_capacity_backpressures_new_requests() {
     let mut scheduler = make_scheduler(2);
-    let threads = vec![vec![(0, 0, 0)], vec![(0, 0, 1)]];
-    scheduler.spawn_n_warps(0x8000_0000, &threads);
+    scheduler.spawn_warp(0, 0x8000_0000, 1);
+    scheduler.spawn_warp(1, 0x8000_0000, 1);
 
     let gmem = GmemFlowConfig::default();
     let smem = SmemFlowConfig {

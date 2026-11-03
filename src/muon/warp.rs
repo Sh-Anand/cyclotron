@@ -586,7 +586,7 @@ impl Warp {
     pub fn set_block_threads_bp(
         &mut self,
         block_idx: (u32, u32, u32),
-        thread_idxs: &Vec<(u32, u32, u32)>,
+        thread_idxs: &[(u32, u32, u32)],
         bp: u32,
         smem_base: u32,
     ) {

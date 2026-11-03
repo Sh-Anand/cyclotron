@@ -7,7 +7,6 @@ use crate::timeq::Cycle;
 use crate::utils::{BitMask, BitSlice};
 use log::info;
 use std::collections::VecDeque;
-use std::iter::{once, repeat};
 use std::sync::Arc;
 
 #[derive(Debug, Default)]
@@ -104,25 +103,13 @@ impl Scheduler {
         self.state_mut().active_warps = 1;
     }
 
-    pub fn spawn_n_warps(&mut self, pc: u32, thread_idxs: &Vec<Vec<(u32, u32, u32)>>) {
-        let last_warp_mask = thread_idxs
-            .last()
-            .expect("last warp is empty")
-            .iter()
-            .enumerate()
-            .fold(0, |mask, (i, _)| mask | 1 << i);
-        let num_warps = thread_idxs.len();
-        let disabled_warps = self.conf().num_warps - num_warps;
-        assert!(disabled_warps <= self.conf().num_warps);
-
-        self.state_mut().started = true;
-        self.state_mut().thread_masks = repeat(self.all_one_bitmask())
-            .take(num_warps - 1)
-            .chain(once(last_warp_mask))
-            .chain(repeat(0).take(disabled_warps))
-            .collect();
-        self.state_mut().pc = [pc].repeat(num_warps);
-        self.base.state.active_warps = num_warps as u32;
+    /// start warp `wid` at `pc` with `lanes` active threads; other warps are untouched
+    pub fn spawn_warp(&mut self, wid: usize, pc: u32, lanes: usize) {
+        assert!(!self.base.state.active_warps.bit(wid), "warp {wid} still active");
+        self.base.state.started = true;
+        self.base.state.pc[wid] = pc;
+        self.base.state.thread_masks[wid] = self.all_one_bitmask() >> (self.conf().num_lanes - lanes);
+        self.base.state.active_warps.mut_bit(wid, true);
     }
 
     pub fn take_branch(&mut self, wid: usize, target_pc: u32) -> SchedulerWriteback {

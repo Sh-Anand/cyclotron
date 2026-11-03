@@ -140,18 +140,18 @@ impl MuonCore {
         self.scheduler.spawn_single_warp()
     }
 
+    /// spawn one CTA's warps on this core; each warp names its slot
     pub fn spawn_n_warps(
         &mut self,
         pc: u32,
         block_idx: (u32, u32, u32),
-        thread_idxs: Vec<Vec<(u32, u32, u32)>>,
+        warps: &[(usize, Vec<(u32, u32, u32)>)], // (wid, thread idxs)
         bp: u32,
         smem_base: u32,
     ) {
-        assert!(thread_idxs.len() <= self.conf().num_warps && !thread_idxs.is_empty());
-        self.scheduler.spawn_n_warps(pc, &thread_idxs);
-        for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
-            warp.set_block_threads_bp(block_idx, warp_thread_idxs, bp, smem_base);
+        for (wid, thread_idxs) in warps {
+            self.scheduler.spawn_warp(*wid, pc, thread_idxs.len());
+            self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base);
         }
     }
 
