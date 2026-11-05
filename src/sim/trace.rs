@@ -2,7 +2,6 @@ use crate::muon::config::MuonConfig;
 use crate::muon::warp::Writeback;
 use std::collections::VecDeque;
 use std::fmt;
-use std::iter::zip;
 
 /// Queues instruction traces from a core into a buffer, and provides a per-warp consume()
 /// interface to dequeue instructions from the buffer in program-order.
@@ -75,36 +74,31 @@ impl Tracer {
         tracer
     }
 
-    pub fn record(&mut self, writebacks: &[Option<Writeback>]) {
-        for (wid, (wb, buf)) in zip(writebacks.iter(), self.bufs.as_mut_slice()).enumerate() {
-            if let Some(wb) = wb {
-                let line = Line {
-                    warp_id: wid as u32,
-                    pc: wb.inst.pc,
-                    opcode: wb.inst.opcode,
-                    opext: wb.inst.opext,
-                    rd_addr: wb.inst.rd_addr,
-                    rs1_addr: wb.inst.rs1_addr,
-                    rs2_addr: wb.inst.rs2_addr,
-                    rs3_addr: wb.inst.rs3_addr,
-                    rs4_addr: wb.inst.rs4_addr,
-                    rd_data: wb.rd_data.clone(),
-                    rs1_data: wb.inst.rs1_data.clone(),
-                    rs2_data: wb.inst.rs2_data.clone(),
-                    rs3_data: wb.inst.rs3_data.clone(),
-                    rs4_data: wb.inst.rs4_data.clone(),
-                    f3: wb.inst.f3,
-                    f7: wb.inst.f7,
-                    imm32: wb.inst.imm32,
-                    imm24: wb.inst.imm24,
-                    csr_imm: wb.inst.csr_imm,
-                    tmask: wb.tmask,
-                    raw: wb.inst.raw,
-                };
-                buf.push_back(line);
-                // println!("trace: pushed line to buf for warp={}; len={}", wid, buf.len());
-            }
-        }
+    pub fn record(&mut self, wid: usize, wb: &Writeback) {
+        let line = Line {
+            warp_id: wid as u32,
+            pc: wb.inst.pc,
+            opcode: wb.inst.opcode,
+            opext: wb.inst.opext,
+            rd_addr: wb.inst.rd_addr,
+            rs1_addr: wb.inst.rs1_addr,
+            rs2_addr: wb.inst.rs2_addr,
+            rs3_addr: wb.inst.rs3_addr,
+            rs4_addr: wb.inst.rs4_addr,
+            rd_data: wb.rd_data.clone(),
+            rs1_data: wb.inst.rs1_data.clone(),
+            rs2_data: wb.inst.rs2_data.clone(),
+            rs3_data: wb.inst.rs3_data.clone(),
+            rs4_data: wb.inst.rs4_data.clone(),
+            f3: wb.inst.f3,
+            f7: wb.inst.f7,
+            imm32: wb.inst.imm32,
+            imm24: wb.inst.imm24,
+            csr_imm: wb.inst.csr_imm,
+            tmask: wb.tmask,
+            raw: wb.inst.raw,
+        };
+        self.bufs[wid].push_back(line);
     }
 
     pub fn peek(&self, warp_id: usize) -> Option<&Line> {

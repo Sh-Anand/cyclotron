@@ -12,11 +12,14 @@ use crate::sim::perf_log::PerfLogSession;
 use crate::sim::trace::{MemTracer, Tracer};
 use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig};
 use crate::timeq::module_now;
+use crate::utils::BitSlice;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Default)]
-pub struct MuonState {}
+pub struct MuonState {
+    last_issued: usize, // round-robin pointer for single issue
+}
 
 pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
@@ -198,12 +201,7 @@ impl MuonCore {
                     ibuf_entries.push(entry);
                 }
             }
-            TimingMode::Disabled => {
-                for (wid, sched_opt) in schedules.iter().enumerate() {
-                    let entry = sched_opt.map(|sched| self.warps[wid].frontend(sched));
-                    ibuf_entries.push(entry);
-                }
-            }
+            TimingMode::Disabled => unreachable!("functional cores issue through process()"),
         }
 
         InstBuf(ibuf_entries)
@@ -265,36 +263,12 @@ impl MuonCore {
                     writebacks.push(wb_opt);
                 }
             }
-            TimingMode::Disabled => {
-                let warps = self.warps.iter_mut();
-                let ibuf_entries = ibuf.0.iter().copied();
-
-                for (warp, ibuf_entry) in zip(warps, ibuf_entries) {
-                    let wb_opt = match ibuf_entry {
-                        Some(ib) => {
-                            let mut shared_mem =
-                                shared_mem.write().expect("shared memory lock poisoned");
-                            Some(warp.backend(
-                                ib,
-                                &mut self.scheduler,
-                                neutrino,
-                                &mut *shared_mem,
-                            )?)
-                        }
-                        None => None,
-                    };
-                    if let Some((_, warp_mem_trace_lines)) = &wb_opt {
-                        mem_trace_lines.extend(warp_mem_trace_lines.iter().cloned());
-                    }
-                    let wb_opt = wb_opt.map(|(wb, _)| wb);
-                    writebacks.push(wb_opt);
-                }
-            }
+            TimingMode::Disabled => unreachable!("functional cores issue through process()"),
         }
 
         if self.trace {
             let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
-            tracer.record(&writebacks);
+            writebacks.iter().enumerate().for_each(|(wid, wb)| wb.iter().for_each(|wb| tracer.record(wid, wb)));
             let mem_tracer = Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer");
             mem_tracer.record(&mem_trace_lines);
         }
@@ -305,11 +279,35 @@ impl MuonCore {
         Ok(())
     }
 
-    /// Process all warps & advance each by a single instruction.
+    /// RTL-style single issue: at most one ready warp per cycle, round-robin
+    fn pick_warp(&mut self) -> Option<Schedule> {
+        let n = self.conf().num_warps;
+        let ready = self.scheduler.active_warp_mask() & !self.scheduler.stalled_warp_mask();
+        let wid = (1..=n).map(|i| (self.base.state.last_issued + i) % n).find(|&w| ready.bit(w))?;
+        self.base.state.last_issued = wid;
+        self.scheduler.schedule(wid)
+    }
+
+    /// Advance the core by one cycle: functional cores issue one instruction from one warp.
     pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
-        let schedules = self.schedule();
-        let ibuf = self.frontend(&schedules);
-        self.backend(&ibuf, neutrino)
+        if let TimingMode::Enabled(_) = self.timing_mode {
+            let schedules = self.schedule();
+            let ibuf = self.frontend(&schedules);
+            return self.backend(&ibuf, neutrino);
+        }
+        if let Some(sched) = self.pick_warp() {
+            let warp = &mut self.warps[sched.warp];
+            let uop = warp.frontend(sched);
+            let mut smem = self.shared_mem.write().expect("shared memory lock poisoned");
+            let (wb, mem_lines) = warp.backend(uop, &mut self.scheduler, neutrino, &mut smem)?;
+            if self.trace {
+                Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(sched.warp, &wb);
+                Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);
+            }
+        }
+        self.scheduler.tick_one();
+        self.warps.iter_mut().for_each(Warp::tick_one);
+        Ok(())
     }
 
     /// Exposes a non-mutating fetch interface for the core.
