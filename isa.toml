@@ -8,13 +8,6 @@ start_pc = 0x10000000
 # 128 KiB
 smem_size = 0x20000
 
-[neutrino]
-num_entries = 32
-num_deps = 3
-task_id_width = 8
-counter_width = 24
-in_order_issue = false
-
 [sim]
 log_level = 1
 timeout = 100000

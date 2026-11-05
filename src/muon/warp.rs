@@ -7,7 +7,6 @@ use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
-use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::MemTraceLine;
@@ -180,7 +179,6 @@ impl Warp {
         &mut self,
         uop: MicroOp,
         scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
     ) -> Result<(Writeback, Vec<MemTraceLine>), ExecErr> {
         let pc = uop.inst.pc;
@@ -197,7 +195,7 @@ impl Warp {
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
-            let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
+            let ex_wb = self.execute_nomem(issued, tmask, scheduler);
             self.mem(&ex_wb, smem)
         }));
 
@@ -241,10 +239,9 @@ impl Warp {
         issued: IssuedInst,
         tmask: u32,
         scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
     ) -> (Writeback, Vec<MemTraceLine>) {
-        let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
+        let ex_wb = self.execute_nomem(issued, tmask, scheduler);
         self.mem(&ex_wb, smem)
     }
 
@@ -255,7 +252,6 @@ impl Warp {
         issued: IssuedInst,
         tmask: u32,
         scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
     ) -> ExWriteback {
         let core_id = self.conf().lane_config.core_id;
         let rf = self.base.state.reg_file.as_mut_slice();
@@ -263,7 +259,7 @@ impl Warp {
 
         // ALU/FPU/AddrGen stage
         ExecuteUnit::execute(
-            issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino,
+            issued, core_id, self.wid, tmask, rf, csrf, scheduler,
         )
     }
 

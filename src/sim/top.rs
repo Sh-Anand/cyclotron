@@ -2,7 +2,6 @@ use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
 use crate::cluster::Cluster;
 use crate::muon::config::MuonConfig;
-use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
@@ -44,7 +43,6 @@ impl Sim {
     pub fn new(
         sim_config: SimConfig,
         muon_config: MuonConfig,
-        neutrino_config: NeutrinoConfig,
         mem_config: MemConfig,
     ) -> Sim {
         let trace_db = if sim_config.trace {
@@ -64,7 +62,6 @@ impl Sim {
                 elf: sim_config.elf.clone(),
                 cluster_config: ClusterConfig {
                     muon_config,
-                    neutrino_config,
                 },
                 mem_config,
             }),
@@ -134,7 +131,6 @@ pub struct CyclotronConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ClusterConfig {
     pub muon_config: MuonConfig,
-    pub neutrino_config: NeutrinoConfig,
 }
 
 pub struct CyclotronTop {

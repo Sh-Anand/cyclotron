@@ -3,7 +3,6 @@ use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::{ExecErr, Warp};
-use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::{MemTracer, Tracer};
@@ -101,19 +100,19 @@ impl MuonCore {
     /// RTL-style single issue: at most one ready warp per cycle, round-robin
     fn pick_warp(&mut self) -> Option<Schedule> {
         let n = self.conf().num_warps;
-        let ready = self.scheduler.active_warp_mask() & !self.scheduler.stalled_warp_mask();
+        let ready = self.scheduler.active_warp_mask();
         let wid = (1..=n).map(|i| (self.base.state.last_issued + i) % n).find(|&w| ready.bit(w))?;
         self.base.state.last_issued = wid;
         self.scheduler.schedule(wid)
     }
 
     /// Advance the core by one cycle: functional cores issue one instruction from one warp.
-    pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+    pub fn process(&mut self) -> Result<(), ExecErr> {
         if let Some(sched) = self.pick_warp() {
             let warp = &mut self.warps[sched.warp];
             let uop = warp.frontend(sched);
             let mut smem = self.shared_mem.write().expect("shared memory lock poisoned");
-            let (wb, mem_lines) = warp.backend(uop, &mut self.scheduler, neutrino, &mut smem)?;
+            let (wb, mem_lines) = warp.backend(uop, &mut self.scheduler, &mut smem)?;
             if self.trace {
                 Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(sched.warp, &wb);
                 Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);

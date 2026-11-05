@@ -2,7 +2,6 @@ use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
 use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
 use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
-use crate::neutrino::neutrino::Neutrino;
 use crate::utils::BitSlice;
 use half::bf16;
 use log::{debug, error};
@@ -734,7 +733,6 @@ impl ExecuteUnit {
         rf: &mut [RegFile],
         csrf: &mut [CSRFile],
         scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
     ) -> ExWriteback {
         let num_lanes = rf.len();
         // lane id of first active thread
@@ -851,8 +849,7 @@ impl ExecuteUnit {
                 todo!("graphics ops unimplemented")
             }
             Opcode::CUSTOM2 => {
-                neutrino.execute(&issued, cid, wid, tmask, &mut rf[first_lid]);
-                (empty, empty_mem, empty_swb)
+                panic!("nu.* instructions (Neutrino) are not supported")
             }
             Opcode::CUSTOM3 => (
                 Self::collect_lanes(|lane| ExecuteUnit::custom3(&issued, lane), tmask, rf),

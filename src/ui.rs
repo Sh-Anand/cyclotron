@@ -1,5 +1,4 @@
 use crate::muon::config::MuonConfig;
-use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{Config, MemConfig, SimConfig};
 use crate::sim::top::Sim;
 use clap::Parser;
@@ -48,7 +47,6 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
     let mut sim_config = SimConfig::from_section(maybe_get(&config_table, "sim"));
     let mem_config = MemConfig::from_section(maybe_get(&config_table, "mem"));
     let mut muon_config = MuonConfig::from_section(maybe_get(&config_table, "muon"));
-    let mut neutrino_config = NeutrinoConfig::from_section(maybe_get(&config_table, "neutrino"));
 
     if let Some(args) = cli_args {
         sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);
@@ -59,7 +57,6 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
         muon_config.num_cores = args.num_cores.unwrap_or(muon_config.num_cores);
     }
 
-    neutrino_config.muon_config = muon_config.clone();
 
-    Sim::new(sim_config, muon_config, neutrino_config, mem_config)
+    Sim::new(sim_config, muon_config, mem_config)
 }

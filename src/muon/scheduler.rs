@@ -27,12 +27,10 @@ pub struct SchedulerState {
     /// exist
     pub started: bool,
     pub active_warps: u32,
-    pub stalled_warps: u32,
     pub thread_masks: Vec<u32>,
     pub tohost: Option<u32>,
     pc: Vec<u32>,
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
-    neutrino_stalled_mask: u32,
 }
 
 /// Per-warp info of which instruction to fetch next
@@ -70,12 +68,10 @@ impl Scheduler {
                 state: SchedulerState {
                     started: false,
                     active_warps: 0,
-                    stalled_warps: 0,
                     thread_masks: vec![0u32; num_warps],
                     tohost: None,
                     pc: vec![config.start_pc; num_warps],
                     ipdom_stack: (0..num_warps).map(|_| VecDeque::new()).collect(),
-                    neutrino_stalled_mask: 0,
                 },
                 ..ModuleBase::default()
             },
@@ -234,7 +230,7 @@ impl Scheduler {
                 SchedulerWriteback::default()
             }
             SFUType::BAR => {
-                panic!("muon does not support vx_bar anymore, use neutrino insts")
+                panic!("vx_bar is not supported")
             }
             SFUType::PRED => {
                 let invert = decoded_inst.rd_addr != 0;
@@ -280,8 +276,7 @@ impl Scheduler {
     }
 
     pub fn schedule(&mut self, wid: usize) -> Option<Schedule> {
-        self.recompute_stall_masks();
-        (self.state().active_warps.bit(wid) && !self.state().stalled_warps.bit(wid)).then(|| {
+        self.state().active_warps.bit(wid).then(|| {
             let pc = self.state().pc[wid];
             let sched = Schedule {
                 pc,
@@ -302,21 +297,8 @@ impl Scheduler {
         self.state().tohost
     }
 
-    pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
-        self.base.state.neutrino_stalled_mask = stalls.to_u32();
-        self.recompute_stall_masks();
-    }
-
     pub fn active_warp_mask(&self) -> u32 {
         self.base.state.active_warps
-    }
-
-    pub fn stalled_warp_mask(&self) -> u32 {
-        self.base.state.stalled_warps
-    }
-
-    fn recompute_stall_masks(&mut self) {
-        self.base.state.stalled_warps = self.base.state.neutrino_stalled_mask;
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -330,17 +312,11 @@ module!(Scheduler, SchedulerState, MuonConfig,);
 impl ModuleBehaviors for Scheduler {
     fn tick_one(&mut self) {
         self.base.cycle += 1;
-        self.recompute_stall_masks();
-        info!(
-            "core {} active warps {:08b} stalled warps {:08b}",
-            self.cid, self.base.state.active_warps, self.base.state.stalled_warps
-        );
+        info!("core {} active warps {:08b}", self.cid, self.base.state.active_warps);
     }
 
     fn reset(&mut self) {
         self.state_mut().thread_masks = [self.all_one_bitmask()].repeat(self.conf().num_warps);
         self.base.state.active_warps = 0;
-        self.base.state.stalled_warps = 0;
-        self.base.state.neutrino_stalled_mask = 0;
     }
 }

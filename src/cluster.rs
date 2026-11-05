@@ -1,6 +1,5 @@
 use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
-use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::top::ClusterConfig;
@@ -10,7 +9,6 @@ use std::sync::{Arc, RwLock};
 pub struct Cluster {
     id: usize,
     pub cores: Vec<MuonCore>,
-    pub neutrino: Neutrino,
     scheduled_threadblocks: usize,
 }
 
@@ -39,7 +37,6 @@ impl Cluster {
         Cluster {
             id,
             cores,
-            neutrino: Neutrino::new(Arc::new(config.neutrino_config)),
             scheduled_threadblocks: 0,
         }
     }
@@ -72,11 +69,8 @@ impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
         for core in &mut self.cores {
             core.tick_one();
-            core.process(&mut self.neutrino).unwrap();
+            core.process().unwrap();
         }
-        self.neutrino.tick_one();
-        self.neutrino
-            .update(&mut self.cores.iter_mut().map(|c| &mut c.scheduler).collect());
     }
 
     fn reset(&mut self) {
