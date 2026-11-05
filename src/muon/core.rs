@@ -1,7 +1,7 @@
 use crate::base::{behavior::*, module::*};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::decode::{InstBuf, IssuedInst};
+use crate::muon::decode::InstBuf;
 use crate::muon::gmem::{CorePerfSummary, CoreTimingModel};
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::{ExecErr, Warp, Writeback};
@@ -303,29 +303,6 @@ impl MuonCore {
         self.warps.iter_mut().for_each(Warp::tick_one);
 
         Ok(())
-    }
-
-    /// Execute an issued instruction from a single warp in the core's functional unit backend.
-    pub fn execute(
-        &mut self,
-        warp_id: usize,
-        issued: IssuedInst,
-        tmask: u32,
-        neutrino: &mut Neutrino,
-    ) -> Writeback {
-        let shared_mem = Arc::clone(&self.shared_mem);
-        let mut shared_mem = shared_mem.write().expect("shared memory lock poisoned");
-        let (writeback, _) = self.warps[warp_id].execute(
-            issued,
-            tmask,
-            &mut self.scheduler,
-            neutrino,
-            &mut *shared_mem,
-        );
-        self.warps[warp_id].tick_one();
-
-        // no tracing done; instruction tracing is only enabled in the ISA-model mode
-        writeback
     }
 
     /// Process all warps & advance each by a single instruction.

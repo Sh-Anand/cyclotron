@@ -187,15 +187,9 @@ impl Warp {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
         }
-        self.frontend_nofetch(schedule, inst)
-    }
-
-    // Used for co-sim where RTL fetches the instruction.
-    pub fn frontend_nofetch(&mut self, schedule: Schedule, inst: u64) -> MicroOp {
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
-        let tmask = schedule.mask;
-        MicroOp { inst, tmask }
+        MicroOp { inst, tmask: schedule.mask }
     }
 
     pub fn backend(
@@ -220,7 +214,7 @@ impl Warp {
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
             let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
-            self.mem(&ex_wb, smem, None)
+            self.mem(&ex_wb, smem)
         }));
 
         // writeback
@@ -354,44 +348,6 @@ impl Warp {
         }
     }
 
-    /// COLL/EX/MEM req stage before mem request is served.
-    /// Used for co-sim with decoupled memory.
-    pub fn backend_beforemem(
-        &mut self,
-        uop: MicroOp,
-        scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
-    ) -> Result<ExWriteback, ExecErr> {
-        let pc = uop.inst.pc;
-        let tmask = uop.tmask;
-
-        assert!(
-            scheduler.state().thread_masks[self.wid] == tmask,
-            "scheduler tmask was not set correctly"
-        );
-
-        // operand collection
-        let issued = self.collect(&uop);
-
-        // execute
-        let ex_writeback = catch_unwind(AssertUnwindSafe(|| {
-            self.execute_nomem(issued, tmask, scheduler, neutrino)
-        }));
-
-        // writeback
-        match ex_writeback {
-            Ok(wb) => Ok(wb),
-            Err(payload) => {
-                let message = payload.downcast::<String>().ok().map(|s| *s);
-                Err(ExecErr {
-                    pc,
-                    warp_id: self.wid,
-                    message,
-                })
-            }
-        }
-    }
-
     /// Collect source operand values from the regfile.
     pub fn collect(&mut self, uop: &MicroOp) -> IssuedInst {
         let rf = self.base.state.reg_file.as_slice();
@@ -408,12 +364,11 @@ impl Warp {
         smem: &mut FlatMemory,
     ) -> (Writeback, Vec<MemTraceLine>) {
         let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
-        self.mem(&ex_wb, smem, None)
+        self.mem(&ex_wb, smem)
     }
 
     /// Execute stage, but only generates mem requests without serving them with the internal
     /// gmem/smem.
-    /// Used for co-sim with decoupled memory.
     pub fn execute_nomem(
         &mut self,
         issued: IssuedInst,
@@ -432,16 +387,11 @@ impl Warp {
     }
 
     /// Memory stage; serve the memory requests produced in EX.
-    /// If `external_mem_resp` is given, handle mem requests with an explicit memory response supplied by an
-    /// external memory model e.g. RTL, instead of using internal gmem/smem.
-    /// TODO: handle RTL response
     pub fn mem(
         &mut self,
         ex_writeback: &ExWriteback,
         smem: &mut FlatMemory,
-        external_mem_resp: Option<&Vec<Option<MemResponse>>>,
     ) -> (Writeback, Vec<MemTraceLine>) {
-        let external_mem = external_mem_resp.is_some();
         // most instructions touch no memory: pass the EX writeback straight through
         if ex_writeback.mem_req.iter().all(Option::is_none) {
             return (
@@ -458,19 +408,7 @@ impl Warp {
         let mem_responses = ex_writeback
             .mem_req
             .iter()
-            .enumerate()
-            .map(|(lane_id, oreq)| {
-                oreq.as_ref().map(|req| {
-                    if external_mem {
-                        external_mem_resp.unwrap()[lane_id]
-                            .as_ref()
-                            .expect("missing mem response for a lane")
-                            .clone()
-                    } else {
-                        self.mem_response(req, smem)
-                    }
-                })
-            })
+            .map(|oreq| oreq.as_ref().map(|req| self.mem_response(req, smem)))
             .collect::<Vec<_>>();
         let mem_trace_lines = ex_writeback
             .mem_req
