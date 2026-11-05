@@ -28,6 +28,7 @@ pub struct MuonCore {
     tracer: Arc<Tracer>,
     mem_tracer: Arc<MemTracer>,
     timing_mode: TimingMode,
+    pub trace: bool,
 }
 
 enum TimingMode {
@@ -71,6 +72,7 @@ impl MuonCore {
             tracer: Arc::new(Tracer::new(&config)),
             mem_tracer: Arc::new(MemTracer::new()),
             timing_mode,
+            trace: false,
         };
 
         info!(
@@ -290,10 +292,12 @@ impl MuonCore {
             }
         }
 
-        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
-        tracer.record(&writebacks);
-        let mem_tracer = Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer");
-        mem_tracer.record(&mem_trace_lines);
+        if self.trace {
+            let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
+            tracer.record(&writebacks);
+            let mem_tracer = Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer");
+            mem_tracer.record(&mem_trace_lines);
+        }
 
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
