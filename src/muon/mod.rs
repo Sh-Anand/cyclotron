@@ -4,6 +4,5 @@ pub mod execute;
 // mod isa;
 pub mod config;
 pub mod csr;
-pub mod gmem;
 pub mod scheduler;
 pub mod warp;

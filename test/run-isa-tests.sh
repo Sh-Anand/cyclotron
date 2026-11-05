@@ -4,20 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-TIMING_FLAG=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --timing)
-            TIMING_FLAG="--timing"
-            shift
-            ;;
-        *)
-            echo "Usage: $0 [--timing]"
-            exit 2
-            ;;
-    esac
-done
-
 mkdir -p logs
 failures=0
 passes=0
@@ -30,7 +16,7 @@ for isatest in test/isa-tests/*; do
     log="logs/${name}.out"
     echo "Running $name ..."
 
-    if ! RUST_LOG=debug ./target/release/cyclotron isa.toml --binary-path "$isatest" ${TIMING_FLAG:+$TIMING_FLAG} > "$log" 2>&1; then
+    if ! RUST_LOG=debug ./target/release/cyclotron isa.toml --binary-path "$isatest" > "$log" 2>&1; then
         echo "::error [fail] $isatest"
         failures=$((failures+1))
     else

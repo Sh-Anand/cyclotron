@@ -7,9 +7,7 @@ use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::sim::perf_log::PerfLogSession;
 use crate::sim::trace_db::{default_trace_db_path, TraceDb};
-use crate::timeflow::CoreGraphConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -18,7 +16,6 @@ pub struct Sim {
     pub config: SimConfig,
     pub top: CyclotronTop,
     pub logger: Arc<Logger>,
-    perf_log_session: Option<Arc<PerfLogSession>>,
     trace_db: Option<Mutex<TraceDb>>,
 }
 
@@ -44,47 +41,12 @@ impl Sim {
         }
     }
 
-    fn write_timing_summary(&self) {
-        if self.config.timing {
-            let summaries = self
-                .top
-                .clusters
-                .iter()
-                .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
-                .collect::<Vec<_>>();
-            if let Some(session) = &self.perf_log_session {
-                session.write_summary(summaries);
-            }
-        }
-    }
-
     pub fn new(
         sim_config: SimConfig,
         muon_config: MuonConfig,
         neutrino_config: NeutrinoConfig,
         mem_config: MemConfig,
     ) -> Sim {
-        Self::new_with_timing(
-            sim_config,
-            muon_config,
-            neutrino_config,
-            mem_config,
-            CoreGraphConfig::default(),
-        )
-    }
-
-    pub fn new_with_timing(
-        sim_config: SimConfig,
-        muon_config: MuonConfig,
-        neutrino_config: NeutrinoConfig,
-        mem_config: MemConfig,
-        timing_config: CoreGraphConfig,
-    ) -> Sim {
-        let perf_log_session = if sim_config.timing {
-            PerfLogSession::new().map(Arc::new)
-        } else {
-            None
-        };
         let trace_db = if sim_config.trace {
             let trace_db_path = default_trace_db_path(None, Some(sim_config.elf.as_path()));
             println!(
@@ -103,20 +65,16 @@ impl Sim {
                 cluster_config: ClusterConfig {
                     muon_config,
                     neutrino_config,
-                    timing_config,
                 },
                 mem_config,
-                timing_enabled: sim_config.timing,
             }),
             &logger,
-            perf_log_session.clone(),
         );
 
         let mut sim = Sim {
             config: sim_config,
             top,
             logger,
-            perf_log_session,
             trace_db,
         };
         sim.top.reset();
@@ -128,13 +86,10 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
-                self.write_timing_summary();
                 return self.check_tohost();
             }
             self.tick();
         }
-
-        self.write_timing_summary();
 
         Err(0)
     }
@@ -174,14 +129,12 @@ pub struct CyclotronConfig {
     pub elf: PathBuf, // TODO: use sim
     pub cluster_config: ClusterConfig,
     pub mem_config: MemConfig,
-    pub timing_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ClusterConfig {
     pub muon_config: MuonConfig,
     pub neutrino_config: NeutrinoConfig,
-    pub timing_config: CoreGraphConfig,
 }
 
 pub struct CyclotronTop {
@@ -195,7 +148,6 @@ impl CyclotronTop {
     pub fn new(
         config: Arc<CyclotronConfig>,
         logger: &Arc<Logger>,
-        perf_log_session: Option<Arc<PerfLogSession>>,
     ) -> CyclotronTop {
         let elf_path = Path::new(&config.elf);
         let imem = ElfBackedMem::new(&elf_path);
@@ -211,32 +163,8 @@ impl CyclotronTop {
 
         // TODO: parameterize
         let num_clusters = 1;
-        let cores_per_cluster = cluster_config.muon_config.num_cores.max(1);
-        if config.timing_enabled {
-            let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
-                cluster_config.timing_config.memory.gmem.clone(),
-                num_clusters,
-                cores_per_cluster,
-            )));
-            for id in 0..num_clusters {
-                clusters.push(Cluster::new_timed(
-                    cluster_config.clone(),
-                    id,
-                    logger,
-                    gmem.clone(),
-                    gmem_timing.clone(),
-                    perf_log_session.clone(),
-                ));
-            }
-        } else {
-            for id in 0..num_clusters {
-                clusters.push(Cluster::new(
-                    cluster_config.clone(),
-                    id,
-                    logger,
-                    gmem.clone(),
-                ));
-            }
+        for id in 0..num_clusters {
+            clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
         }
         CyclotronTop {
             scheduled: false,

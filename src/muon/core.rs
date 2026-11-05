@@ -1,19 +1,13 @@
 use crate::base::{behavior::*, module::*};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::decode::InstBuf;
-use crate::muon::gmem::{CorePerfSummary, CoreTimingModel};
 use crate::muon::scheduler::{Schedule, Scheduler};
-use crate::muon::warp::{ExecErr, Warp, Writeback};
+use crate::muon::warp::{ExecErr, Warp};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::sim::perf_log::PerfLogSession;
 use crate::sim::trace::{MemTracer, Tracer};
-use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig};
-use crate::timeq::module_now;
 use crate::utils::BitSlice;
-use std::iter::zip;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Default)]
@@ -30,24 +24,17 @@ pub struct MuonCore {
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
     mem_tracer: Arc<MemTracer>,
-    timing_mode: TimingMode,
     pub trace: bool,
 }
 
-enum TimingMode {
-    Disabled,
-    Enabled(CoreTimingModel),
-}
-
 impl MuonCore {
-    fn build_core(
+    pub fn new(
         config: Arc<MuonConfig>,
         cluster_id: usize,
         core_id: usize,
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
         shared_mem: Arc<RwLock<FlatMemory>>,
-        timing_mode: TimingMode,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
@@ -74,7 +61,6 @@ impl MuonCore {
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
             mem_tracer: Arc::new(MemTracer::new()),
-            timing_mode,
             trace: false,
         };
 
@@ -85,59 +71,6 @@ impl MuonCore {
 
         core.init_conf(Arc::clone(&config));
         core
-    }
-
-    pub fn new(
-        config: Arc<MuonConfig>,
-        cluster_id: usize,
-        core_id: usize,
-        logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
-        shared_mem: Arc<RwLock<FlatMemory>>,
-    ) -> Self {
-        Self::build_core(
-            config,
-            cluster_id,
-            core_id,
-            logger,
-            gmem,
-            shared_mem,
-            TimingMode::Disabled,
-        )
-    }
-
-    pub fn new_timed(
-        config: Arc<MuonConfig>,
-        cluster_id: usize,
-        core_id: usize,
-        logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
-        shared_mem: Arc<RwLock<FlatMemory>>,
-        timing_config: CoreGraphConfig,
-        timing_core_id: usize,
-        timing_cluster_id: usize,
-        cluster_gmem: Arc<RwLock<ClusterGmemGraph>>,
-        perf_log_session: Option<Arc<PerfLogSession>>,
-    ) -> Self {
-        let num_warps = config.num_warps;
-        let timing_mode = TimingMode::Enabled(CoreTimingModel::new_with_perf_log(
-            timing_config,
-            num_warps,
-            timing_core_id,
-            timing_cluster_id,
-            cluster_gmem,
-            perf_log_session,
-            logger.clone(),
-        ));
-        Self::build_core(
-            config,
-            cluster_id,
-            core_id,
-            logger,
-            gmem,
-            shared_mem,
-            timing_mode,
-        )
     }
 
     /// Spawn a single warp to this core.
@@ -165,120 +98,6 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
-    pub fn has_timing_inflight(&self) -> bool {
-        match &self.timing_mode {
-            TimingMode::Disabled => false,
-            TimingMode::Enabled(timing_model) => {
-                timing_model.outstanding_gmem() > 0 || timing_model.outstanding_smem() > 0
-            }
-        }
-    }
-
-    /// Schedule all warps and get per-warp PC/tmasks.
-    pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
-        (0..self.conf().num_warps)
-            .map(|wid| self.scheduler.schedule(wid))
-            .collect::<Vec<_>>()
-    }
-
-    pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
-        let now = module_now(&self.scheduler);
-        let mut ibuf_entries = Vec::with_capacity(self.warps.len());
-
-        match &mut self.timing_mode {
-            TimingMode::Enabled(timing_model) => {
-                for (wid, sched_opt) in schedules.iter().enumerate() {
-                    let entry = match sched_opt {
-                        Some(sched) => {
-                            if timing_model.allow_fetch(now, wid, sched.pc, &mut self.scheduler) {
-                                Some(self.warps[wid].frontend(*sched))
-                            } else {
-                                None
-                            }
-                        }
-                        None => None,
-                    };
-                    ibuf_entries.push(entry);
-                }
-            }
-            TimingMode::Disabled => unreachable!("functional cores issue through process()"),
-        }
-
-        InstBuf(ibuf_entries)
-    }
-
-    /// Execute decoded instructions from all active warps, i.o.w. heads of the instruction buffer,
-    /// in the core backend.
-    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
-        let now = module_now(&self.scheduler);
-        let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
-        let mut mem_trace_lines = Vec::new();
-        let shared_mem = Arc::clone(&self.shared_mem);
-
-        match &mut self.timing_mode {
-            TimingMode::Enabled(timing_model) => {
-                timing_model.tick(now, &mut self.scheduler);
-
-                let eligible = ibuf
-                    .0
-                    .iter()
-                    .map(|entry| entry.is_some())
-                    .collect::<Vec<_>>();
-                let issue_mask = timing_model.select_issue_mask(now, &eligible);
-                let active_warps = self.scheduler.active_warp_mask().count_ones();
-                let eligible_warps = eligible.iter().filter(|v| **v).count() as u32;
-                let issued_warps = issue_mask.iter().filter(|v| **v).count() as u32;
-                timing_model.record_issue_stats(now, active_warps, eligible_warps, issued_warps);
-
-                let warps = self.warps.iter_mut();
-                let ibuf_entries = ibuf.0.iter().copied();
-
-                for (wid, (warp, ibuf_entry)) in zip(warps, ibuf_entries).enumerate() {
-                    let wb_opt = match ibuf_entry {
-                        Some(ib) => {
-                            if !issue_mask.get(wid).copied().unwrap_or(false) {
-                                self.scheduler
-                                    .set_resource_wait_until(wid, Some(now.saturating_add(1)));
-                                self.scheduler.replay_instruction(wid);
-                                None
-                            } else {
-                                let mut shared_mem =
-                                    shared_mem.write().expect("shared memory lock poisoned");
-                                warp.backend_timed(
-                                    ib,
-                                    &mut self.scheduler,
-                                    neutrino,
-                                    &mut *shared_mem,
-                                    timing_model,
-                                    now,
-                                )?
-                            }
-                        }
-                        None => None,
-                    };
-                    if let Some((_, warp_mem_trace_lines)) = &wb_opt {
-                        mem_trace_lines.extend(warp_mem_trace_lines.iter().cloned());
-                    }
-                    let wb_opt = wb_opt.map(|(wb, _)| wb);
-                    writebacks.push(wb_opt);
-                }
-            }
-            TimingMode::Disabled => unreachable!("functional cores issue through process()"),
-        }
-
-        if self.trace {
-            let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
-            writebacks.iter().enumerate().for_each(|(wid, wb)| wb.iter().for_each(|wb| tracer.record(wid, wb)));
-            let mem_tracer = Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer");
-            mem_tracer.record(&mem_trace_lines);
-        }
-
-        self.scheduler.tick_one();
-        self.warps.iter_mut().for_each(Warp::tick_one);
-
-        Ok(())
-    }
-
     /// RTL-style single issue: at most one ready warp per cycle, round-robin
     fn pick_warp(&mut self) -> Option<Schedule> {
         let n = self.conf().num_warps;
@@ -290,11 +109,6 @@ impl MuonCore {
 
     /// Advance the core by one cycle: functional cores issue one instruction from one warp.
     pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
-        if let TimingMode::Enabled(_) = self.timing_mode {
-            let schedules = self.schedule();
-            let ibuf = self.frontend(&schedules);
-            return self.backend(&ibuf, neutrino);
-        }
         if let Some(sched) = self.pick_warp() {
             let warp = &mut self.warps[sched.warp];
             let uop = warp.frontend(sched);
@@ -332,14 +146,6 @@ impl MuonCore {
         &self.mem_tracer
     }
 
-    pub fn timing_summary(&self) -> CorePerfSummary {
-        match &self.timing_mode {
-            TimingMode::Disabled => {
-                panic!("timing summary requested while timing mode is disabled")
-            }
-            TimingMode::Enabled(timing_model) => timing_model.perf_summary(),
-        }
-    }
 }
 
 module!(

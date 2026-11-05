@@ -3,7 +3,6 @@ use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::decode::IssuedInst;
 use crate::muon::execute::SFUType;
-use crate::timeq::Cycle;
 use crate::utils::{BitMask, BitSlice};
 use log::info;
 use std::collections::VecDeque;
@@ -33,7 +32,6 @@ pub struct SchedulerState {
     pub tohost: Option<u32>,
     pc: Vec<u32>,
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
-    resource_wait_until: Vec<Option<Cycle>>,
     neutrino_stalled_mask: u32,
 }
 
@@ -77,7 +75,6 @@ impl Scheduler {
                     tohost: None,
                     pc: vec![config.start_pc; num_warps],
                     ipdom_stack: (0..num_warps).map(|_| VecDeque::new()).collect(),
-                    resource_wait_until: vec![None; num_warps],
                     neutrino_stalled_mask: 0,
                 },
                 ..ModuleBase::default()
@@ -310,24 +307,6 @@ impl Scheduler {
         self.recompute_stall_masks();
     }
 
-    pub fn clear_resource_wait(&mut self, wid: usize) {
-        if let Some(entry) = self.base.state.resource_wait_until.get_mut(wid) {
-            *entry = None;
-        }
-        self.recompute_stall_masks();
-    }
-
-    pub fn set_resource_wait_until(&mut self, wid: usize, wait_until: Option<Cycle>) {
-        if let Some(entry) = self.base.state.resource_wait_until.get_mut(wid) {
-            *entry = wait_until.filter(|deadline| *deadline > self.base.cycle);
-        }
-        self.recompute_stall_masks();
-    }
-
-    pub fn replay_instruction(&mut self, wid: usize) {
-        self.base.state.pc[wid] = self.base.state.pc[wid].wrapping_sub(8);
-    }
-
     pub fn active_warp_mask(&self) -> u32 {
         self.base.state.active_warps
     }
@@ -336,25 +315,8 @@ impl Scheduler {
         self.base.state.stalled_warps
     }
 
-    fn resource_wait_mask(&self) -> u32 {
-        self.base
-            .state
-            .resource_wait_until
-            .iter()
-            .enumerate()
-            .fold(0u32, |mask, (wid, wait)| {
-                if let Some(deadline) = wait {
-                    if self.base.cycle < *deadline {
-                        return mask | (1u32 << wid);
-                    }
-                }
-                mask
-            })
-    }
-
     fn recompute_stall_masks(&mut self) {
-        let wait_mask = self.resource_wait_mask();
-        self.base.state.stalled_warps = self.base.state.neutrino_stalled_mask | wait_mask;
+        self.base.state.stalled_warps = self.base.state.neutrino_stalled_mask;
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -380,6 +342,5 @@ impl ModuleBehaviors for Scheduler {
         self.base.state.active_warps = 0;
         self.base.state.stalled_warps = 0;
         self.base.state.neutrino_stalled_mask = 0;
-        self.base.state.resource_wait_until = vec![None; self.conf().num_warps];
     }
 }

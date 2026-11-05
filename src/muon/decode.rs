@@ -178,7 +178,6 @@ pub struct MicroOp {
     pub inst: DecodedInst,
     pub tmask: u32,
 }
-pub struct InstBuf(pub Vec<Option<MicroOp>>);
 
 impl std::fmt::Display for DecodedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

@@ -3,7 +3,6 @@ use crate::muon::core::MuonCore;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::sim::perf_log::PerfLogSession;
 use crate::sim::top::ClusterConfig;
 use log::info;
 use std::sync::{Arc, RwLock};
@@ -45,43 +44,6 @@ impl Cluster {
         }
     }
 
-    pub fn new_timed(
-        config: Arc<ClusterConfig>,
-        id: usize,
-        logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
-        gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
-        perf_log_session: Option<Arc<PerfLogSession>>,
-    ) -> Self {
-        let mut cores = Vec::new();
-        let shared_mem = Arc::new(RwLock::new(FlatMemory::new_with_size(
-            config.muon_config.smem_size,
-            None,
-        )));
-        for cid in 0..config.muon_config.num_cores {
-            let timing_core_id = id * config.muon_config.num_cores + cid;
-            cores.push(MuonCore::new_timed(
-                Arc::new(config.muon_config),
-                id,
-                cid,
-                logger,
-                gmem.clone(),
-                shared_mem.clone(),
-                config.timing_config.clone(),
-                timing_core_id,
-                id,
-                gmem_timing.clone(),
-                perf_log_session.clone(),
-            ));
-        }
-        Cluster {
-            id,
-            cores,
-            neutrino: Neutrino::new(Arc::new(config.neutrino_config)),
-            scheduled_threadblocks: 0,
-        }
-    }
-
     pub fn schedule_threadblock(&mut self) {
         assert_eq!(
             self.scheduled_threadblocks, 0,
@@ -102,7 +64,7 @@ impl Cluster {
     pub fn all_cores_retired(&self) -> bool {
         self.cores
             .iter()
-            .all(|core| core.all_warps_retired() && !core.has_timing_inflight())
+            .all(|core| core.all_warps_retired())
     }
 }
 
