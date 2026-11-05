@@ -279,8 +279,16 @@ impl ExecuteUnit {
             }
         }
 
-        fn fp32_fcvt_saturate(a: u32, unsigned: bool) -> u32 {
+        fn fp32_fcvt_saturate(a: u32, unsigned: bool, rm: u32) -> u32 {
+            // round per the instruction's rm; dyn (7) would read frm, which stays at rne
             let f = f32::from_bits(a);
+            let f = match rm {
+                1 => f.trunc(),          // rtz
+                2 => f.floor(),          // rdn
+                3 => f.ceil(),           // rup
+                4 => f.round(),          // rmm: ties away from zero
+                _ => f.round_ties_even(), // rne, dyn
+            };
             if unsigned {
                 f.to_u32()
                     .unwrap_or_else(|| if f < 0f32 { 0u32 } else { u32::MAX })
@@ -326,22 +334,22 @@ impl ExecuteUnit {
             0b001_1110000u16 => InstImp("fclass.s", |[a, _b]| { fp32_fclass(a) }),
         };
 
-        static OPFP_F7_FP32_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
-            0b0000000u8 => InstImp("fadd.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x + y }) }),
-            0b0000100u8 => InstImp("fsub.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x - y }) }),
-            0b0001000u8 => InstImp("fmul.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x * y }) }),
-            0b0001100u8 => InstImp("fdiv.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x / y }) }),
-            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, _rs2_addr]| { fp32_op(a, b, |x, _y| { x.sqrt() }) }),
-            0b1100000u8 => InstImp("fcvt.*.s", |[a, _b, rs2_addr]| { fp32_fcvt_saturate(a, rs2_addr > 0) }),
-            0b1101000u8 => InstImp("fcvt.s.*", |[a, _b, rs2_addr]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
+        static OPFP_F7_FP32_INSTS: phf::Map<u8, InstImp<4>> = phf_map! {
+            0b0000000u8 => InstImp("fadd.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x + y }) }),
+            0b0000100u8 => InstImp("fsub.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x - y }) }),
+            0b0001000u8 => InstImp("fmul.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x * y }) }),
+            0b0001100u8 => InstImp("fdiv.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x / y }) }),
+            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, _y| { x.sqrt() }) }),
+            0b1100000u8 => InstImp("fcvt.*.s", |[a, _b, rs2_addr, rm]| { fp32_fcvt_saturate(a, rs2_addr > 0, rm) }),
+            0b1101000u8 => InstImp("fcvt.s.*", |[a, _b, rs2_addr, _rm]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
         };
 
-        static OPFP_F7_BF16_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
-            0b0000000u8 => InstImp("fadd.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x + y }) }),
-            0b0000100u8 => InstImp("fsub.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x - y }) }),
-            0b0001000u8 => InstImp("fmul.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x * y }) }),
-            0b0001100u8 => InstImp("fdiv.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x / y }) }),
-            0b0101100u8 => InstImp("fsqrt.h", |[a, b, _rs2_addr]| { bf16_op(a, b, |x, _y| { bf16::from_f32(x.to_f32().sqrt()) }) }),
+        static OPFP_F7_BF16_INSTS: phf::Map<u8, InstImp<4>> = phf_map! {
+            0b0000000u8 => InstImp("fadd.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x + y }) }),
+            0b0000100u8 => InstImp("fsub.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x - y }) }),
+            0b0001000u8 => InstImp("fmul.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x * y }) }),
+            0b0001100u8 => InstImp("fdiv.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x / y }) }),
+            0b0101100u8 => InstImp("fsqrt.h", |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, _y| { bf16::from_f32(x.to_f32().sqrt()) }) }),
         };
 
         let fmt = issued_inst.f7 & 0b11;
@@ -370,7 +378,8 @@ impl ExecuteUnit {
                             [
                                 issued_inst.rs1_data[lane].unwrap(),
                                 issued_inst.rs2_data[lane].unwrap(),
-                                issued_inst.rs2_addr as u32
+                                issued_inst.rs2_addr as u32,
+                                issued_inst.f3 as u32
                             ]
                         ))
                     })
