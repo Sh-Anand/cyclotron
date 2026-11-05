@@ -118,7 +118,8 @@ pub struct InstDef<T>(pub &'static str, pub T);
 pub struct ExecuteUnit;
 
 impl ExecuteUnit {
-    pub fn alu(issued: &IssuedInst, lane: usize) -> Option<u32> {
+    /// look up the op once per instruction; the returned closure executes it for one lane
+    pub fn alu(issued: &IssuedInst) -> impl Fn(usize) -> Option<u32> + '_ {
         fn check_zero(b: u32) -> bool {
             if b == 0 {
                 // we should not panic - real riscv returns -1 on division by 0
@@ -173,41 +174,30 @@ impl ExecuteUnit {
             0b101_0100000u16 => InstImp("srai", |[a, b]| { ((a as i32) >> (b & 31)) as u32 }),
         };
 
-        let rd_data = match issued.opcode {
-            Opcode::OP => OP_INSTS
-                .get(&(f3_f7_mask!(issued.f3, issued.f7)))
-                .and_then(|imp| {
-                    Some(print_and_execute!(
-                        imp,
-                        [
-                            issued.rs1_data[lane].unwrap(),
-                            issued.rs2_data[lane].unwrap(),
-                        ]
-                    ))
-                }),
+        static AUIPC: InstImp<2> = InstImp("auipc", |[a, b]| a.wrapping_add(b));
+        static LUI: InstImp<2> = InstImp("lui", |[a, _]| a << 12);
+
+        let imp = match issued.opcode {
+            Opcode::OP => OP_INSTS.get(&(f3_f7_mask!(issued.f3, issued.f7))),
             Opcode::OP_IMM => OPIMM_F3_INSTS
                 .get(&issued.f3)
-                .or_else(|| OPIMM_F3F7_INSTS.get(&(f3_f7_mask!(issued.f3, issued.f7))))
-                .and_then(|imp| {
-                    Some(print_and_execute!(
-                        imp,
-                        [issued.rs1_data[lane].unwrap(), issued.imm32]
-                    ))
-                }),
-            Opcode::AUIPC => {
-                let imp = InstImp("auipc", |[a, b]| a.wrapping_add(b));
-                Some(print_and_execute!(imp, [issued.pc, issued.imm32]))
-            }
-            Opcode::LUI => {
-                let imp = InstImp("lui", |[a]| a << 12);
-                Some(print_and_execute!(imp, [issued.imm32]))
-            }
-            _ => {
-                panic!("unreachable");
-            }
+                .or_else(|| OPIMM_F3F7_INSTS.get(&(f3_f7_mask!(issued.f3, issued.f7)))),
+            Opcode::AUIPC => Some(&AUIPC),
+            Opcode::LUI => Some(&LUI),
+            _ => panic!("unreachable"),
         };
 
-        rd_data
+        move |lane| {
+            imp.map(|imp| {
+                let operands = match issued.opcode {
+                    Opcode::OP => [issued.rs1_data[lane].unwrap(), issued.rs2_data[lane].unwrap()],
+                    Opcode::OP_IMM => [issued.rs1_data[lane].unwrap(), issued.imm32],
+                    Opcode::AUIPC => [issued.pc, issued.imm32],
+                    _ => [issued.imm32, 0], // LUI
+                };
+                print_and_execute!(imp, operands)
+            })
+        }
     }
 
     pub fn fpu(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
@@ -754,7 +744,7 @@ impl ExecuteUnit {
 
         let (rd_wb, mem_req, sched_wb) = match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => (
-                Self::collect_lanes(|lane| ExecuteUnit::alu(&issued, lane), tmask, rf),
+                Self::collect_lanes(ExecuteUnit::alu(&issued), tmask, rf),
                 empty_mem,
                 empty_swb,
             ),
