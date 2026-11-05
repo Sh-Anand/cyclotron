@@ -442,6 +442,19 @@ impl Warp {
         external_mem_resp: Option<&Vec<Option<MemResponse>>>,
     ) -> (Writeback, Vec<MemTraceLine>) {
         let external_mem = external_mem_resp.is_some();
+        // most instructions touch no memory: pass the EX writeback straight through
+        if ex_writeback.mem_req.iter().all(Option::is_none) {
+            return (
+                Writeback {
+                    inst: ex_writeback.inst.clone(),
+                    tmask: ex_writeback.tmask,
+                    rd_addr: ex_writeback.rd_addr,
+                    rd_data: ex_writeback.rd_data.clone(),
+                    sched_wb: ex_writeback.sched_wb,
+                },
+                vec![],
+            );
+        }
         let mem_responses = ex_writeback
             .mem_req
             .iter()
