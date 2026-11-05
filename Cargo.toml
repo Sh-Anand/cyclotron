@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rand = "0.8.5"
 goblin = "0.5"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 log = { version = "0.4.22", features = ["max_level_debug", "release_max_level_warn"] }

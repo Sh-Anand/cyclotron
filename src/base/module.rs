@@ -71,23 +71,6 @@ where
     }
 }
 
-macro_rules! module_inner {
-    ($T:ty, $C:ty) => {
-        type StateType = $T;
-        type ConfigType = $C;
-
-        fn base(&mut self) -> &mut ModuleBase<$T, $C> {
-            &mut self.base
-        }
-
-        fn base_ref(&self) -> &ModuleBase<$T, $C> {
-            &self.base
-        }
-    };
-}
-
-pub(crate) use module_inner;
-
 /// arguments: identifier, state type, config type, additional methods
 macro_rules! module {
     ($comp:ident, $T:ty, $C:ty, $($method:item)*) => {

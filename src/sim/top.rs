@@ -1,7 +1,6 @@
 use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
 use crate::cluster::Cluster;
-use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
 use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{MemConfig, SimConfig};
@@ -186,7 +185,7 @@ pub struct ClusterConfig {
 }
 
 pub struct CyclotronTop {
-    pub cproc: CommandProcessor,
+    scheduled: bool, // the standalone sim runs one threadblock on cluster 0
     pub clusters: Vec<Cluster>,
     pub timeout: u64,
     pub gmem: Arc<RwLock<FlatMemory>>,
@@ -240,10 +239,7 @@ impl CyclotronTop {
             }
         }
         CyclotronTop {
-            cproc: CommandProcessor::new(
-                Arc::new(config.cluster_config.muon_config.clone()),
-                1, /*FIXME: properly get thread dimension*/
-            ),
+            scheduled: false,
             clusters,
             timeout: config.timeout,
             gmem,
@@ -251,12 +247,9 @@ impl CyclotronTop {
     }
 
     pub fn schedule_clusters(&mut self) {
-        let tb_schedule = self.cproc.schedule();
-        let num_clusters = self.clusters.len();
-        for id in 0..num_clusters {
-            if tb_schedule[id] {
-                self.clusters[id].schedule_threadblock();
-            }
+        if !self.scheduled {
+            self.clusters[0].schedule_threadblock();
+            self.scheduled = true;
         }
     }
 
@@ -292,14 +285,6 @@ impl ModuleBehaviors for CyclotronTop {
         self.schedule_clusters();
 
         self.clusters.iter_mut().for_each(Cluster::tick_one);
-
-        // FIXME: if tick_one() is called after finished() is true, the retire() call might result
-        // in an underflow.
-        let num_clusters = self.clusters.len();
-        for id in 0..num_clusters {
-            let retired_tb = self.clusters[id].retired_threadblock();
-            self.cproc.retire(id, retired_tb);
-        }
     }
 
     fn reset(&mut self) {

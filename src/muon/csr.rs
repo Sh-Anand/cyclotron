@@ -4,7 +4,7 @@ use crate::muon::config::MuonConfig;
 use crate::muon::execute::CSRType;
 use log::info;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Default)]
 pub struct CSRState {
@@ -15,7 +15,6 @@ pub struct CSRState {
 #[derive(Debug, Default)]
 pub struct CSRFile {
     base: ModuleBase<CSRState, MuonConfig>,
-    lock: RwLock<()>,
     lane_id: usize,
     block_idx: (u32, u32, u32),
     thread_idx: (u32, u32, u32),
@@ -58,7 +57,6 @@ macro_rules! get_ro_match {
 impl CSRFile {
     pub fn new(config: Arc<MuonConfig>, lid: usize) -> Self {
         let mut csr = CSRFile::default();
-        csr.lock = RwLock::new(());
         csr.init_conf(config);
         csr.lane_id = lid;
         csr
@@ -136,7 +134,6 @@ impl CSRFile {
     // these can only be read by the user,
     // but the emulator can update them
     fn csr_rw_ref_emu(&mut self, addr: u32) -> Option<&mut u32> {
-        let _lock = self.lock.write().expect("lock poisoned");
         get_ref_rw_match!(self, addr, [
             0xb00, 0; // mcycle
             0xb80, 0; // mcycle_h
@@ -147,7 +144,6 @@ impl CSRFile {
 
     // these are writable by user with an initial value
     fn csr_rw_ref_user(&mut self, addr: u32) -> Option<&mut u32> {
-        let _lock = self.lock.write().expect("lock poisoned");
         get_ref_rw_match!(self, addr, [
             0xacc, 0; // cisc accelerator
             0x001, 0; // fflags
