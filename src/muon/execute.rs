@@ -676,8 +676,10 @@ impl ExecuteUnit {
         };
         let rs1_data = collect_source_reg(decoded.rs1_addr);
         let rs2_data = collect_source_reg(decoded.rs2_addr);
-        let rs3_data = collect_source_reg(decoded.rs3_addr);
-        let rs4_data = collect_source_reg(decoded.rs4_addr);
+        // only fused multiply-adds read rs3 (nothing reads rs4); empty vecs don't allocate
+        let has = decoded.has_regs();
+        let rs3_data = if has.rs3 { collect_source_reg(decoded.rs3_addr) } else { Vec::new() };
+        let rs4_data = if has.rs4 { collect_source_reg(decoded.rs4_addr) } else { Vec::new() };
 
         IssuedInst {
             opcode: decoded.opcode,
@@ -735,7 +737,8 @@ impl ExecuteUnit {
         );
 
         let empty = vec![None::<u32>; num_lanes];
-        let empty_mem = vec![None::<MemRequest>; num_lanes];
+        // no mem requests is an empty vec, which Warp::mem passes straight through
+        let empty_mem = Vec::<Option<MemRequest>>::new();
         let empty_swb = SchedulerWriteback::default();
 
         let (rd_wb, mem_req, sched_wb) = match issued.opcode {
