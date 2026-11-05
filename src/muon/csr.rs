@@ -21,6 +21,8 @@ pub struct CSRFile {
     thread_idx: (u32, u32, u32),
     bp: u32,
     smem_base: u32,
+    warp_mask: u32,
+    thread_mask: u32,
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -136,8 +138,6 @@ impl CSRFile {
     fn csr_rw_ref_emu(&mut self, addr: u32) -> Option<&mut u32> {
         let _lock = self.lock.write().expect("lock poisoned");
         get_ref_rw_match!(self, addr, [
-            0xcc3, 0; // warp_mask
-            0xcc4, 0; // thread_mask
             0xb00, 0; // mcycle
             0xb80, 0; // mcycle_h
             0xb02, 0; // minstret
@@ -157,6 +157,11 @@ impl CSRFile {
     }
 
     pub fn user_access(&mut self, addr: u32, value: u32, op: CSRType) -> u32 {
+        match addr {
+            0xcc3 => return self.warp_mask,
+            0xcc4 => return self.thread_mask,
+            _ => {}
+        }
         if let Some(w) = self.csr_rw_ref_user(addr) {
             // writable
             let old_value = w.clone();
@@ -188,6 +193,11 @@ impl CSRFile {
     }
 
     pub fn emu_access(&mut self, addr: u32, value: u32) {
+        match addr {
+            0xcc3 => return self.warp_mask = value,
+            0xcc4 => return self.thread_mask = value,
+            _ => {}
+        }
         if let Some(emu_ref) = self.csr_rw_ref_emu(addr) {
             *emu_ref = value
         } else {
