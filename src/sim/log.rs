@@ -41,6 +41,10 @@ impl Logger {
         }
     }
 
+    pub fn enabled(&self, level: &LogLevel) -> bool {
+        *level <= self.level
+    }
+
     pub fn log(&self, level: LogLevel, args: std::fmt::Arguments<'_>) {
         if level > self.level {
             return;
@@ -54,7 +58,11 @@ impl Logger {
 macro_rules! log {
     // usage: log!(logger, "a {} event", "clock")
     ($logger:expr, $level:expr, $($arg:tt)+) => {{
-        $logger.log($level, format_args!($($arg)+));
+        // check the level first so disabled logs never evaluate their arguments
+        let (logger, level) = (&$logger, $level);
+        if logger.enabled(&level) {
+            logger.log(level, format_args!($($arg)+));
+        }
     }};
 }
 #[macro_export]
