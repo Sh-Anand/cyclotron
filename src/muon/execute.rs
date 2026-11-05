@@ -456,27 +456,25 @@ impl ExecuteUnit {
     }
 
     fn load(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
-        static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
-            (0u8, 0u8) => "lb.global",
-            (0u8, 1u8) => "lb.shared",
-            (1u8, 0u8) => "lh.global",
-            (1u8, 1u8) => "lh.shared",
-            (2u8, 0u8) => "lw.global",
-            (2u8, 1u8) => "lw.shared",
-            (3u8, 0u8) => "ld.global",
-            (3u8, 1u8) => "ld.shared",
-            (4u8, 0u8) => "lbu.global",
-            (4u8, 1u8) => "lbu.shared",
-            (5u8, 0u8) => "lhu.global",
-            (5u8, 1u8) => "lhu.shared",
-            (6u8, 0u8) => "lwu.global",
-            (6u8, 1u8) => "lwu.shared",
-        };
-
         let key = (issued_inst.f3, issued_inst.opext);
         let shared_load = issued_inst.opext == 1;
-        let Some(&mnemonic) = INSTS.get(&key) else {
-            unimplemented!("unknown load instruction")
+        // plain match, not a hash lookup: this runs once per lane
+        let mnemonic = match key {
+            (0, 0) => "lb.global",
+            (0, 1) => "lb.shared",
+            (1, 0) => "lh.global",
+            (1, 1) => "lh.shared",
+            (2, 0) => "lw.global",
+            (2, 1) => "lw.shared",
+            (3, 0) => "ld.global",
+            (3, 1) => "ld.shared",
+            (4, 0) => "lbu.global",
+            (4, 1) => "lbu.shared",
+            (5, 0) => "lhu.global",
+            (5, 1) => "lhu.shared",
+            (6, 0) => "lwu.global",
+            (6, 1) => "lwu.shared",
+            _ => unimplemented!("unknown load instruction"),
         };
 
         let inst_imp = InstImp(mnemonic, |[a, b]| a.wrapping_add(b));
@@ -503,19 +501,17 @@ impl ExecuteUnit {
     }
 
     fn store(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
-        static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
-            (0u8, 0u8) => "sb.global",
-            (0u8, 1u8) => "sb.shared",
-            (1u8, 0u8) => "sh.global",
-            (1u8, 1u8) => "sh.shared",
-            (2u8, 0u8) => "sw.global",
-            (2u8, 1u8) => "sw.shared",
-        };
-
         let key = (issued_inst.f3, issued_inst.opext);
         let shared_store = issued_inst.opext == 1;
-        let Some(&mnemonic) = INSTS.get(&key) else {
-            unimplemented!("unknown store instruction")
+        // plain match, not a hash lookup: this runs once per lane
+        let mnemonic = match key {
+            (0, 0) => "sb.global",
+            (0, 1) => "sb.shared",
+            (1, 0) => "sh.global",
+            (1, 1) => "sh.shared",
+            (2, 0) => "sw.global",
+            (2, 1) => "sw.shared",
+            _ => unimplemented!("unknown store instruction"),
         };
 
         let inst_imp = InstImp(mnemonic, |[a, b]| a.wrapping_add(b));
