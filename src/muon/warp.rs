@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Default)]
 pub struct WarpState {
     pub reg_file: Vec<RegFile>,
-    pub csr_file: Vec<CSRFile>,
+    pub csr_file: CSRFile,
 }
 
 pub struct Warp {
@@ -39,7 +39,7 @@ impl ModuleBehaviors for Warp {
 
     fn reset(&mut self) {
         self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
-        self.state_mut().csr_file.iter_mut().for_each(|x| x.reset());
+        self.state_mut().csr_file.reset();
         self.ibuf.clear();
     }
 }
@@ -133,9 +133,7 @@ impl Warp {
                     reg_file: (0..num_lanes)
                         .map(|i| RegFile::new(config.clone(), i))
                         .collect(),
-                    csr_file: (0..num_lanes)
-                        .map(|i| CSRFile::new(config.clone(), i))
-                        .collect(),
+                    csr_file: CSRFile::new(*config),
                 },
                 ..ModuleBase::default()
             },
@@ -183,10 +181,6 @@ impl Warp {
     ) -> Result<(Writeback, Vec<MemTraceLine>), ExecErr> {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
-        for c in self.state_mut().csr_file.iter_mut() {
-            c.emu_access(0xcc3, scheduler.active_warp_mask());
-            c.emu_access(0xcc4, tmask);
-        }
 
         assert!(
             scheduler.state().thread_masks[self.wid] == tmask,
@@ -259,7 +253,7 @@ impl Warp {
     ) -> ExWriteback {
         let core_id = self.conf().lane_config.core_id;
         let rf = self.base.state.reg_file.as_mut_slice();
-        let csrf = self.base.state.csr_file.as_mut_slice();
+        let csrf = &mut self.base.state.csr_file;
 
         // ALU/FPU/AddrGen stage
         ExecuteUnit::execute(
@@ -422,11 +416,8 @@ impl Warp {
         bp: u32,
         smem_base: u32,
     ) {
-        assert!(thread_idxs.len() <= self.base.state.csr_file.len());
         assert!(thread_idxs.len() > 0);
-        for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
-            csr_file.set_block_thread_bp(block_idx, *thread_idx, bp, smem_base);
-        }
+        self.base.state.csr_file.set_block_threads_bp(block_idx, thread_idxs, bp, smem_base);
     }
 
 }

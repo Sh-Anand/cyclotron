@@ -569,7 +569,14 @@ impl ExecuteUnit {
         })
     }
 
-    pub fn csr(issued_inst: &IssuedInst, lane: usize, csrf: &mut CSRFile) -> Option<u32> {
+    /// every active lane reads the old value; the first active lane's operand updates the csr
+    pub fn csr(
+        issued_inst: &IssuedInst,
+        tmask: u32,
+        num_lanes: usize,
+        csrf: &mut CSRFile,
+        active_warps: u32,
+    ) -> Vec<Option<u32>> {
         let csr_type = print_and_unwrap!(match issued_inst.f3 {
             1 => InstDef("csrrw", CSRType::RW),
             2 => InstDef("csrrs", CSRType::RS),
@@ -579,22 +586,27 @@ impl ExecuteUnit {
             7 => InstDef("csrrci", CSRType::RCI),
             _ => panic!("unimplemented"),
         });
-        let new_val = match csr_type {
-            CSRType::RW | CSRType::RS | CSRType::RC => issued_inst.rs1_data[lane].unwrap(),
+        let first_lid = tmask.trailing_zeros() as usize;
+        let operand = match csr_type {
+            CSRType::RW | CSRType::RS | CSRType::RC => issued_inst.rs1_data[first_lid].unwrap(),
             CSRType::RWI | CSRType::RSI | CSRType::RCI => issued_inst.csr_imm as u32,
         };
-        let csrr = match csr_type {
-            CSRType::RS | CSRType::RSI => new_val == 0,
-            _ => false,
-        };
+        let csrr = matches!(csr_type, CSRType::RS | CSRType::RSI) && operand == 0;
         let addr = issued_inst.imm32;
         if [0xcc3, 0xcc4].contains(&addr) && !csrr {
             panic!("unimplemented thread mask write using csr");
         }
-        let old_val = csrf.user_access(addr, new_val, csr_type);
-        debug!("csr read address {:04x} => value {}", addr, old_val);
-
-        Some(old_val)
+        let rds = (0..num_lanes)
+            .map(|lane| tmask.bit(lane).then(|| csrf.read(addr, lane, tmask, active_warps)))
+            .collect();
+        let old = csrf.read(addr, first_lid, tmask, active_warps);
+        debug!("csr read address {:04x} => value {}", addr, old);
+        csrf.write(addr, match csr_type {
+            CSRType::RW | CSRType::RWI => operand,
+            CSRType::RS | CSRType::RSI => old | operand,
+            CSRType::RC | CSRType::RCI => old & !operand,
+        });
+        rds
     }
 
     pub fn sfu(
@@ -731,7 +743,7 @@ impl ExecuteUnit {
         wid: usize,
         tmask: u32,
         rf: &mut [RegFile],
-        csrf: &mut [CSRFile],
+        csrf: &mut CSRFile,
         scheduler: &mut Scheduler,
     ) -> ExWriteback {
         let num_lanes = rf.len();
@@ -823,14 +835,7 @@ impl ExecuteUnit {
                     )
                 } else {
                     // csr
-                    let rds = csrf
-                        .iter_mut()
-                        .enumerate()
-                        .map(|(lane, lcsrf)| match tmask.bit(lane) {
-                            true => ExecuteUnit::csr(&issued, lane, lcsrf),
-                            false => None,
-                        })
-                        .collect();
+                    let rds = ExecuteUnit::csr(&issued, tmask, num_lanes, csrf, scheduler.active_warp_mask());
                     (rds, empty_mem, empty_swb)
                 }
             }
