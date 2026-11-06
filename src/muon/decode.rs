@@ -58,6 +58,14 @@ pub struct IssuedInst {
 }
 
 impl DecodedInst {
+    /// changes pc/tmask/active warps or reads CSRs: ends the ibuf, executes at issue
+    pub fn is_control(&self) -> bool {
+        matches!(
+            self.opcode,
+            Opcode::BRANCH | Opcode::JAL | Opcode::JALR | Opcode::SYSTEM | Opcode::MISC_MEM | Opcode::CUSTOM0
+        )
+    }
+
     pub fn has_regs(&self) -> HasRegs {
         match self.opcode {
             Opcode::LOAD

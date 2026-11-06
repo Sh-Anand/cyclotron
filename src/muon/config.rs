@@ -10,6 +10,7 @@ pub struct MuonConfig {
     pub num_regs: usize,
     pub start_pc: u32,
     pub smem_size: usize,
+    pub ibuf_depth: usize, // decoded instructions per warp available for issue
     #[serde(skip)]
     pub lane_config: LaneConfig,
 }
@@ -25,6 +26,7 @@ impl Default for MuonConfig {
             num_regs: 256,
             start_pc: 0x10000000u32,
             smem_size: 0x10_0000, // includes MMIO space
+            ibuf_depth: 4,
             lane_config: LaneConfig::default(),
         }
     }

@@ -10,6 +10,7 @@ use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::MemTraceLine;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
@@ -26,6 +27,7 @@ pub struct WarpState {
 pub struct Warp {
     pub base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
+    pub ibuf: VecDeque<MicroOp>, // decoded, not yet issued; all but a trailing control op already executed
     logger: Arc<Logger>,
     gmem: Arc<RwLock<FlatMemory>>,
 }
@@ -38,6 +40,7 @@ impl ModuleBehaviors for Warp {
     fn reset(&mut self) {
         self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
         self.state_mut().csr_file.iter_mut().for_each(|x| x.reset());
+        self.ibuf.clear();
     }
 }
 
@@ -137,6 +140,7 @@ impl Warp {
                 ..ModuleBase::default()
             },
             wid: config.lane_config.warp_id,
+            ibuf: VecDeque::new(),
             logger: logger.clone(),
             gmem,
         };
@@ -166,10 +170,6 @@ impl Warp {
     pub fn frontend(&mut self, schedule: Schedule) -> MicroOp {
         // fetch
         let inst = self.fetch(schedule.pc);
-        for c in self.state_mut().csr_file.iter_mut() {
-            c.emu_access(0xcc3, schedule.active_warps);
-            c.emu_access(0xcc4, schedule.mask);
-        }
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
         MicroOp { inst, tmask: schedule.mask }
@@ -183,6 +183,10 @@ impl Warp {
     ) -> Result<(Writeback, Vec<MemTraceLine>), ExecErr> {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
+        for c in self.state_mut().csr_file.iter_mut() {
+            c.emu_access(0xcc3, scheduler.active_warp_mask());
+            c.emu_access(0xcc4, tmask);
+        }
 
         assert!(
             scheduler.state().thread_masks[self.wid] == tmask,

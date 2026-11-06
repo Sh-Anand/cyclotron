@@ -1,7 +1,8 @@
 use crate::base::{behavior::*, module::*};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::scheduler::{Schedule, Scheduler};
+use crate::muon::decode::MicroOp;
+use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::{ExecErr, Warp};
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
@@ -97,29 +98,48 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
-    /// RTL-style single issue: at most one ready warp per cycle, round-robin
-    fn pick_warp(&mut self) -> Option<Schedule> {
+    /// RTL-style single issue: at most one active warp per cycle, round-robin
+    fn pick_warp(&mut self) -> Option<usize> {
         let n = self.conf().num_warps;
         let ready = self.scheduler.active_warp_mask();
         let wid = (1..=n).map(|i| (self.base.state.last_issued + i) % n).find(|&w| ready.bit(w))?;
         self.base.state.last_issued = wid;
-        self.scheduler.schedule(wid)
+        Some(wid)
     }
 
-    /// Advance the core by one cycle: functional cores issue one instruction from one warp.
+    /// Advance the core by one cycle: issue one instruction from one warp.
     pub fn process(&mut self) -> Result<(), ExecErr> {
-        if let Some(sched) = self.pick_warp() {
-            let warp = &mut self.warps[sched.warp];
-            let uop = warp.frontend(sched);
-            let mut smem = self.shared_mem.write().expect("shared memory lock poisoned");
-            let (wb, mem_lines) = warp.backend(uop, &mut self.scheduler, &mut smem)?;
-            if self.trace {
-                Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(sched.warp, &wb);
-                Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);
+        if let Some(wid) = self.pick_warp() {
+            let smem = self.shared_mem.clone();
+            let mut smem = smem.write().expect("shared memory lock poisoned");
+            // top up the ibuf; non-control instructions execute as they are decoded
+            while self.warps[wid].ibuf.len() < self.conf().ibuf_depth
+                && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
+            {
+                let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap());
+                (!uop.inst.is_control()).then(|| self.exec(wid, uop, &mut smem)).transpose()?;
+                self.warps[wid].ibuf.push_back(uop);
             }
+            // issue the oldest ready entry (all are ready for now); control executes here
+            self.warps[wid]
+                .ibuf
+                .pop_front()
+                .filter(|u| u.inst.is_control())
+                .map(|u| self.exec(wid, u, &mut smem))
+                .transpose()?;
         }
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
+        Ok(())
+    }
+
+    /// Execute one instruction functionally and trace it.
+    fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory) -> Result<(), ExecErr> {
+        let (wb, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem)?;
+        if self.trace {
+            Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(wid, &wb);
+            Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);
+        }
         Ok(())
     }
 
