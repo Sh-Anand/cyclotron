@@ -2,7 +2,7 @@ extern crate num;
 
 use crate::base::behavior::*;
 use crate::base::module::{module, IsModule, ModuleBase};
-use crate::muon::config::MuonConfig;
+use crate::muon::config::{MuonConfig, Unit};
 use crate::muon::execute::Opcode;
 use crate::utils::*;
 use std::fmt::{Debug, Display, Formatter};
@@ -64,6 +64,19 @@ impl DecodedInst {
             self.opcode,
             Opcode::BRANCH | Opcode::JAL | Opcode::JALR | Opcode::SYSTEM | Opcode::MISC_MEM | Opcode::CUSTOM0
         )
+    }
+
+    /// the functional unit this instruction issues to (branches and jumps use the ALU, as in Muon)
+    pub fn unit(&self) -> Unit {
+        match self.opcode {
+            Opcode::OP if self.f7 == 1 => Unit::MulDiv,
+            Opcode::OP_FP if matches!(self.f7 >> 2, 0b00011 | 0b01011) => Unit::FpDivSqrt, // fdiv, fsqrt
+            Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_SUB | Opcode::NM_ADD => Unit::Fp,
+            Opcode::CUSTOM3 => Unit::FpExp,
+            Opcode::LOAD | Opcode::LOAD_FP | Opcode::STORE | Opcode::STORE_FP | Opcode::AMO => Unit::Lsu,
+            Opcode::SYSTEM | Opcode::MISC_MEM | Opcode::CUSTOM0 => Unit::Sfu,
+            _ => Unit::Alu,
+        }
     }
 
     pub fn has_regs(&self) -> HasRegs {
