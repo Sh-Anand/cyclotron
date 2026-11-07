@@ -79,6 +79,24 @@ impl DecodedInst {
         }
     }
 
+    /// destination register; none for x0 or when the rd bits are not a destination
+    pub fn rd(&self) -> Option<usize> {
+        let no_rd = matches!(
+            self.opcode,
+            Opcode::BRANCH | Opcode::STORE | Opcode::STORE_FP | Opcode::MISC_MEM | Opcode::CUSTOM0
+        ) || (self.opcode == Opcode::SYSTEM && self.f3 == 0); // ecall
+        (!no_rd && self.rd_addr != 0).then_some(self.rd_addr as usize)
+    }
+
+    /// source registers, without x0
+    pub fn rs(&self) -> impl Iterator<Item = usize> {
+        let h = self.has_regs();
+        [(h.rs1, self.rs1_addr), (h.rs2, self.rs2_addr), (h.rs3, self.rs3_addr), (h.rs4, self.rs4_addr)]
+            .into_iter()
+            .filter(|&(used, r)| used && r != 0)
+            .map(|(_, r)| r as usize)
+    }
+
     pub fn has_regs(&self) -> HasRegs {
         match self.opcode {
             Opcode::LOAD
@@ -93,11 +111,13 @@ impl DecodedInst {
             | Opcode::NM_SUB
             | Opcode::NM_ADD
             | Opcode::BRANCH
-            | Opcode::JALR => HasRegs {
+            | Opcode::JALR
+            | Opcode::AMO => HasRegs {
                 rs1: true,
                 rs2: matches!(
                     self.opcode,
-                    Opcode::STORE
+                    Opcode::AMO
+                        | Opcode::STORE
                         | Opcode::STORE_FP
                         | Opcode::OP
                         | Opcode::OP_FP

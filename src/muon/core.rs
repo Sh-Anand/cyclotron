@@ -1,7 +1,7 @@
 use crate::base::{behavior::*, module::*};
 use crate::info;
-use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::decode::MicroOp;
+use crate::muon::config::{LaneConfig, MuonConfig, Unit};
+use crate::muon::decode::{DecodedInst, MicroOp};
 use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::{ExecErr, Warp};
 use crate::sim::flat_mem::FlatMemory;
@@ -98,35 +98,62 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
-    /// RTL-style single issue: at most one active warp per cycle, round-robin
-    fn pick_warp(&mut self) -> Option<usize> {
+    /// RTL-style single issue: the next warp, round-robin, with a ready ibuf entry
+    fn pick_warp(&mut self, now: u64) -> Option<(usize, usize)> {
         let n = self.conf().num_warps;
-        let ready = self.scheduler.active_warp_mask();
-        let wid = (1..=n).map(|i| (self.base.state.last_issued + i) % n).find(|&w| ready.bit(w))?;
+        let (wid, i) = (1..=n)
+            .map(|k| (self.base.state.last_issued + k) % n)
+            .find_map(|w| self.ready_entry(w, now).map(|i| (w, i)))?;
         self.base.state.last_issued = wid;
-        Some(wid)
+        Some((wid, i))
+    }
+
+    /// oldest ibuf entry of warp `w` with no hazard on older entries and its registers ready at `now`
+    fn ready_entry(&self, w: usize, now: u64) -> Option<usize> {
+        let warp = &self.warps[w];
+        (0..warp.ibuf.len()).find(|&i| {
+            let u = &warp.ibuf[i].inst;
+            let (rd, mem) = (u.rd(), u.unit() == Unit::Lsu);
+            let hazard = |o: &DecodedInst| {
+                o.rd().is_some_and(|r| rd == Some(r) || u.rs().any(|s| s == r)) // WAW, RAW
+                    || rd.is_some_and(|r| o.rs().any(|s| s == r)) // WAR
+                    || (mem && o.unit() == Unit::Lsu) // memory ops stay in order
+            };
+            (i == 0 || !u.is_control()) // control issues last
+                && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
+                && u.rs().chain(rd).all(|r| warp.reg_ready[r] <= now) // scoreboard: RAW, WAW
+        })
+    }
+
+    /// top up warp `wid`'s ibuf; non-control instructions execute as they are decoded
+    fn refill(&mut self, wid: usize, smem: &mut FlatMemory) -> Result<(), ExecErr> {
+        while self.warps[wid].ibuf.len() < self.conf().ibuf_depth
+            && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
+        {
+            let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap());
+            (!uop.inst.is_control()).then(|| self.exec(wid, uop, smem)).transpose()?;
+            self.warps[wid].ibuf.push_back(uop);
+        }
+        Ok(())
     }
 
     /// Advance the core by one cycle: issue one instruction from one warp.
     pub fn process(&mut self) -> Result<(), ExecErr> {
-        if let Some(wid) = self.pick_warp() {
-            let smem = self.shared_mem.clone();
-            let mut smem = smem.write().expect("shared memory lock poisoned");
-            // top up the ibuf; non-control instructions execute as they are decoded
-            while self.warps[wid].ibuf.len() < self.conf().ibuf_depth
-                && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
-            {
-                let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap());
-                (!uop.inst.is_control()).then(|| self.exec(wid, uop, &mut smem)).transpose()?;
-                self.warps[wid].ibuf.push_back(uop);
+        let now = self.base.cycle;
+        let smem = self.shared_mem.clone();
+        let mut smem = smem.write().expect("shared memory lock poisoned");
+        let active = self.scheduler.active_warp_mask();
+        for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
+            self.refill(w, &mut smem)?;
+        }
+        if let Some((wid, i)) = self.pick_warp(now) {
+            // control executes at issue; everything else already executed at decode
+            let uop = self.warps[wid].ibuf.remove(i).unwrap();
+            uop.inst.is_control().then(|| self.exec(wid, uop, &mut smem)).transpose()?;
+            if let Some(rd) = uop.inst.rd() {
+                let unit = uop.inst.unit();
+                self.warps[wid].reg_ready[rd] = now + self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
             }
-            // issue the oldest ready entry (all are ready for now); control executes here
-            self.warps[wid]
-                .ibuf
-                .pop_front()
-                .filter(|u| u.inst.is_control())
-                .map(|u| self.exec(wid, u, &mut smem))
-                .transpose()?;
         }
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);

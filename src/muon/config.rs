@@ -36,7 +36,7 @@ impl Default for MuonConfig {
 
 /// Functional units; all are fully pipelined.  An instruction occupies its unit for
 /// ceil(num_lanes / lanes) cycles, and its rd is ready `latency` cycles after the last of them.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
     Alu,
     MulDiv,

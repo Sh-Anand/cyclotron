@@ -28,6 +28,7 @@ pub struct Warp {
     pub base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
     pub ibuf: VecDeque<MicroOp>, // decoded, not yet issued; all but a trailing control op already executed
+    pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
     logger: Arc<Logger>,
     gmem: Arc<RwLock<FlatMemory>>,
 }
@@ -41,6 +42,7 @@ impl ModuleBehaviors for Warp {
         self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
         self.state_mut().csr_file.reset();
         self.ibuf.clear();
+        self.reg_ready.fill(0);
     }
 }
 
@@ -139,6 +141,7 @@ impl Warp {
             },
             wid: config.lane_config.warp_id,
             ibuf: VecDeque::new(),
+            reg_ready: vec![0; config.num_regs],
             logger: logger.clone(),
             gmem,
         };
