@@ -39,7 +39,8 @@ impl Default for MuonConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
     Alu,
-    MulDiv,
+    Mul,
+    Div,
     Fp,
     FpDivSqrt,
     FpExp,
@@ -59,7 +60,8 @@ pub struct UnitConfig {
 #[serde(default)]
 pub struct UnitsConfig {
     pub alu: UnitConfig,
-    pub muldiv: UnitConfig,
+    pub mul: UnitConfig,
+    pub div: UnitConfig,
     pub fp: UnitConfig,
     pub fp_divsqrt: UnitConfig,
     pub fp_exp: UnitConfig,
@@ -72,7 +74,8 @@ impl Default for UnitsConfig {
         let u = |lanes, latency| UnitConfig { lanes, latency };
         Self {
             alu: u(32, 3),         // rocket ALU, recomposer register
-            muldiv: u(32, 36),     // rocket MulDiv, mulUnroll = divUnroll = 1: ~34 cycles
+            mul: u(32, 36),        // rocket MulDiv, mulUnroll = 1: 32 iterations + 2
+            div: u(32, 37),        // rocket MulDiv, divUnroll = 1: 32 iterations + sign fixup + 2
             fp: u(16, 5),          // CVFPU addmul/noncomp/conv: 2 pipe regs + recomposer
             fp_divsqrt: u(4, 16),  // CVFPU PULP divsqrt, 3 iteration units: ~9 iterations + pre/post + 2 pipe regs
             fp_exp: u(8, 9),       // FPEX: 6 stages + recomposer
@@ -86,7 +89,8 @@ impl UnitsConfig {
     pub fn get(&self, unit: Unit) -> UnitConfig {
         match unit {
             Unit::Alu => self.alu,
-            Unit::MulDiv => self.muldiv,
+            Unit::Mul => self.mul,
+            Unit::Div => self.div,
             Unit::Fp => self.fp,
             Unit::FpDivSqrt => self.fp_divsqrt,
             Unit::FpExp => self.fp_exp,

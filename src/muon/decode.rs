@@ -69,7 +69,8 @@ impl DecodedInst {
     /// the functional unit this instruction issues to (branches and jumps use the ALU, as in Muon)
     pub fn unit(&self) -> Unit {
         match self.opcode {
-            Opcode::OP if self.f7 == 1 => Unit::MulDiv,
+            Opcode::OP if self.f7 == 1 && self.f3 < 4 => Unit::Mul, // mul, mulh, mulhsu, mulhu
+            Opcode::OP if self.f7 == 1 => Unit::Div,                // div, divu, rem, remu
             Opcode::OP_FP if matches!(self.f7 >> 2, 0b00011 | 0b01011) => Unit::FpDivSqrt, // fdiv, fsqrt
             Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_SUB | Opcode::NM_ADD => Unit::Fp,
             Opcode::CUSTOM3 => Unit::FpExp,
