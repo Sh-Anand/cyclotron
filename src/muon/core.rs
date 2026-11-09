@@ -16,6 +16,9 @@ pub struct MuonState {
     last_issued: usize, // round-robin pointer for single issue
 }
 
+/// a CTA: (launching command id, block idx), as its warps' CSRs hold
+pub type CtaId = (u64, (u32, u32, u32));
+
 pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
     pub scheduler: Scheduler,
@@ -90,11 +93,38 @@ impl MuonCore {
         bp: u32,
         smem_base: u32,
         cmd_id: u64,
+        regs: usize,
     ) {
         for (wid, thread_idxs) in warps {
             self.scheduler.spawn_warp(*wid, pc, thread_idxs.len());
             self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
+            self.warps[*wid].regs = regs;
         }
+    }
+
+    /// unallocated warp slots, as many as `regs_per_core` still holds at `regs` per thread
+    pub fn free_warps(&self, regs: usize, regs_per_core: usize) -> Vec<usize> {
+        let allocated = self.scheduler.state().allocated;
+        let used: usize = self.warps.iter().filter(|w| allocated.bit(w.wid)).map(|w| w.regs).sum();
+        (0..self.conf().num_warps).filter(|&w| !allocated.bit(w)).take((regs_per_core - used) / regs).collect()
+    }
+
+    /// warps in `mask` that belong to CTA `id`, by their CSRs
+    fn cta_warps(&self, id: CtaId, mask: u32) -> impl Iterator<Item = usize> + '_ {
+        let csrs = |w: usize| &self.warps[w].base.state.csr_file;
+        (0..self.conf().num_warps).filter(move |&w| mask.bit(w) && (csrs(w).cmd_id, csrs(w).block_idx) == id)
+    }
+
+    pub fn cta_live(&self, id: CtaId) -> bool {
+        self.cta_warps(id, self.scheduler.active_warp_mask()).next().is_some()
+    }
+
+    /// free CTA `id`'s warp slots, stopping any still running; whether it had any here
+    pub fn free_cta(&mut self, id: CtaId) -> bool {
+        let mask = self.cta_warps(id, self.scheduler.state().allocated).fold(0, |m, w| m | 1 << w);
+        let s = self.scheduler.state_mut();
+        (s.active_warps, s.allocated) = (s.active_warps & !mask, s.allocated & !mask);
+        mask != 0
     }
 
     // TODO: This should differentiate between different threadblocks.

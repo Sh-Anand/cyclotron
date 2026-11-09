@@ -27,6 +27,7 @@ pub struct SchedulerState {
     /// exist
     pub started: bool,
     pub active_warps: u32,
+    pub allocated: u32, // warp slots held by a CTA; freed only when the whole CTA is
     pub thread_masks: Vec<u32>,
     pub tohost: Option<u32>,
     pc: Vec<u32>,
@@ -65,6 +66,7 @@ impl Scheduler {
                 state: SchedulerState {
                     started: false,
                     active_warps: 0,
+                    allocated: 0,
                     thread_masks: vec![0u32; num_warps],
                     tohost: None,
                     pc: vec![config.start_pc; num_warps],
@@ -94,11 +96,12 @@ impl Scheduler {
 
     /// start warp `wid` at `pc` with `lanes` active threads; other warps are untouched
     pub fn spawn_warp(&mut self, wid: usize, pc: u32, lanes: usize) {
-        assert!(!self.base.state.active_warps.bit(wid), "warp {wid} still active");
+        assert!(!self.base.state.allocated.bit(wid), "warp {wid} still allocated");
         self.base.state.started = true;
         self.base.state.pc[wid] = pc;
         self.base.state.thread_masks[wid] = self.all_one_bitmask() >> (self.conf().num_lanes - lanes);
         self.base.state.active_warps.mut_bit(wid, true);
+        self.base.state.allocated.mut_bit(wid, true);
     }
 
     pub fn take_branch(&mut self, wid: usize, target_pc: u32) -> SchedulerWriteback {
