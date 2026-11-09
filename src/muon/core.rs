@@ -102,11 +102,11 @@ impl MuonCore {
         }
     }
 
-    /// unallocated warp slots, as many as `regs_per_core` still holds at `regs` per thread
-    pub fn free_warps(&self, regs: usize, regs_per_core: usize) -> Vec<usize> {
+    /// unallocated warp slots, as many as the core's free regs hold at `regs` per thread
+    pub fn free_warps(&self, regs: usize) -> Vec<usize> {
         let allocated = self.scheduler.state().allocated;
         let used: usize = self.warps.iter().filter(|w| allocated.bit(w.wid)).map(|w| w.regs).sum();
-        (0..self.conf().num_warps).filter(|&w| !allocated.bit(w)).take((regs_per_core - used) / regs).collect()
+        (0..self.conf().num_warps).filter(|&w| !allocated.bit(w)).take((self.conf().regs_per_core - used) / regs).collect()
     }
 
     /// warps in `mask` that belong to CTA `id`, by their CSRs

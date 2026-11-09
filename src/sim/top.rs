@@ -1,13 +1,13 @@
 use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
-use crate::cluster::Cluster;
 use crate::muon::config::MuonConfig;
+use crate::muon::core::MuonCore;
+use crate::muon::sm::SM;
 use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace_db::{default_trace_db_path, TraceDb};
-use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -25,17 +25,15 @@ impl Sim {
         };
         let trace_db = trace_db.lock().expect("trace db lock poisoned");
 
-        for (cluster_id, cluster) in self.top.clusters.iter_mut().enumerate() {
-            for (core_id, core) in cluster.cores.iter_mut().enumerate() {
-                let num_warps = core.conf().num_warps;
-                for warp_id in 0..num_warps {
-                    while let Some(line) = core.get_tracer_mut().consume(warp_id) {
-                        trace_db.record_inst_line(cluster_id as u32, core_id as u32, &line);
-                    }
+        for (core_id, core) in self.top.sm.cores.iter_mut().enumerate() {
+            let num_warps = core.conf().num_warps;
+            for warp_id in 0..num_warps {
+                while let Some(line) = core.get_tracer_mut().consume(warp_id) {
+                    trace_db.record_inst_line(0, core_id as u32, &line);
                 }
-                while let Some(line) = core.get_mem_tracer_mut().consume() {
-                    trace_db.record_mem_line(cluster_id as u32, core_id as u32, &line);
-                }
+            }
+            while let Some(line) = core.get_mem_tracer_mut().consume() {
+                trace_db.record_mem_line(0, core_id as u32, &line);
             }
         }
     }
@@ -60,9 +58,7 @@ impl Sim {
             Arc::new(CyclotronConfig {
                 timeout: sim_config.timeout,
                 elf: sim_config.elf.clone(),
-                cluster_config: ClusterConfig {
-                    muon_config,
-                },
+                muon_config,
                 mem_config,
             }),
             &logger,
@@ -92,7 +88,7 @@ impl Sim {
     }
 
     pub fn check_tohost(&self) -> Result<(), u32> {
-        if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.tohost() {
+        if let Some(tohost) = self.top.sm.cores[0].scheduler.tohost() {
             if tohost != 0 {
                 let case = tohost >> 1;
                 println!(
@@ -124,18 +120,14 @@ impl Sim {
 pub struct CyclotronConfig {
     pub timeout: u64, // TODO: use sim
     pub elf: PathBuf, // TODO: use sim
-    pub cluster_config: ClusterConfig,
+    pub muon_config: MuonConfig,
     pub mem_config: MemConfig,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct ClusterConfig {
-    pub muon_config: MuonConfig,
-}
-
 pub struct CyclotronTop {
-    scheduled: bool, // the standalone sim runs one threadblock on cluster 0
-    pub clusters: Vec<Cluster>,
+    scheduled: bool, // the standalone sim starts warp 0 on every core of its one SM
+    cycle: u64,      // the global clock; gluon keeps its own
+    pub sm: SM,
     pub timeout: u64,
     pub gmem: Arc<RwLock<FlatMemory>>,
 }
@@ -147,8 +139,6 @@ impl CyclotronTop {
     ) -> CyclotronTop {
         let elf_path = Path::new(&config.elf);
         let imem = ElfBackedMem::new(&elf_path);
-        let mut clusters = Vec::new();
-        let cluster_config = Arc::new(config.cluster_config.clone());
 
         // TODO: current implementation means imem is writable, but this is true
         // in hardware too?
@@ -157,22 +147,18 @@ impl CyclotronTop {
 
         let gmem = Arc::new(RwLock::new(gmem));
 
-        // TODO: parameterize
-        let num_clusters = 1;
-        for id in 0..num_clusters {
-            clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
-        }
         CyclotronTop {
             scheduled: false,
-            clusters,
+            cycle: 0,
+            sm: SM::new(0, config.muon_config, logger, gmem.clone()),
             timeout: config.timeout,
             gmem,
         }
     }
 
-    pub fn schedule_clusters(&mut self) {
+    pub fn schedule(&mut self) {
         if !self.scheduled {
-            self.clusters[0].schedule_threadblock();
+            self.sm.cores.iter_mut().for_each(MuonCore::spawn_single_warp);
             self.scheduled = true;
         }
     }
@@ -200,18 +186,21 @@ impl CyclotronTop {
     }
 
     pub fn finished(&self) -> bool {
-        self.clusters.iter().all(|cl| cl.all_cores_retired())
+        self.sm.cores.iter().all(MuonCore::all_warps_retired)
     }
 }
 
 impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
-        self.schedule_clusters();
-
-        self.clusters.iter_mut().for_each(Cluster::tick_one);
+        self.schedule();
+        self.cycle += 1;
+        self.sm.tick(self.cycle);
+        if let Some(err) = self.sm.errs.iter().find_map(Option::as_ref) {
+            panic!("{err:?}");
+        }
     }
 
     fn reset(&mut self) {
-        self.clusters.iter_mut().for_each(Cluster::reset);
+        self.sm.cores.iter_mut().for_each(MuonCore::reset);
     }
 }

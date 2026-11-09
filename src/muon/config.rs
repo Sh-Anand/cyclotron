@@ -6,8 +6,9 @@ use serde::Deserialize;
 pub struct MuonConfig {
     pub num_lanes: usize,
     pub num_warps: usize,
-    pub num_cores: usize, // per-cluster
+    pub num_cores: usize, // per SM
     pub num_regs: usize,
+    pub regs_per_core: usize, // physical regs per lane on a core, shared by its warp slots
     pub start_pc: u32,
     pub smem_size: usize,
     pub ibuf_depth: usize, // decoded instructions per warp available for issue
@@ -26,6 +27,7 @@ impl Default for MuonConfig {
             num_warps: 8,
             num_cores: 1,
             num_regs: 256,
+            regs_per_core: 256 * 8, // every warp slot at num_regs
             start_pc: 0x10000000u32,
             smem_size: 0x10_0000, // includes MMIO space
             ibuf_depth: 4,
