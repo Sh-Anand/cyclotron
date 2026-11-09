@@ -1,5 +1,5 @@
 use crate::muon::config::MuonConfig;
-use crate::muon::core::MuonCore;
+use crate::muon::core::{CtaId, MuonCore};
 use crate::muon::warp::ExecErr;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
@@ -50,8 +50,38 @@ impl SM {
         Some(base..base + len)
     }
 
-    pub fn free_smem(&mut self, range: &Range<usize>) {
-        self.smem_used.retain(|used| used != range);
+    /// free warp slots across cores, roomiest core first; per core as many as its free regs hold at
+    /// `regs` per thread
+    pub fn free_slots(&self, regs: usize) -> Vec<(usize, usize)> {
+        let mut free: Vec<Vec<(usize, usize)>> = self
+            .cores
+            .iter()
+            .enumerate()
+            .map(|(c, core)| core.free_warps(regs).into_iter().map(|w| (c, w)).collect())
+            .collect();
+        free.sort_by_key(|slots| std::cmp::Reverse(slots.len()));
+        free.concat()
+    }
+
+    /// whether any warp of CTA `id` still runs
+    pub fn cta_live(&self, id: CtaId) -> bool {
+        self.cores.iter().any(|core| core.cta_live(id))
+    }
+
+    /// the error that stopped a core running CTA `id`
+    pub fn cta_err(&self, id: CtaId) -> Option<ExecErr> {
+        self.cores.iter().zip(&self.errs).find_map(|(core, err)| err.clone().filter(|_| core.cta_live(id)))
+    }
+
+    /// free CTA `id`'s warp slots and its `smem`; cores it errored on run again
+    pub fn free_cta(&mut self, id: CtaId, smem: &Range<usize>) {
+        for (core, err) in self.cores.iter_mut().zip(self.errs.iter_mut()) {
+            if core.free_cta(id) {
+                *err = None;
+            }
+        }
+        self.smem_used.retain(|used| used != smem);
+        self.frees += 1;
     }
 
     pub fn busy(&self) -> bool {
