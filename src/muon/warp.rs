@@ -29,6 +29,7 @@ pub struct Warp {
     pub wid: usize,
     pub ibuf: VecDeque<MicroOp>, // decoded, not yet issued; all but a trailing control op already executed
     pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
+    pub fetch_ready: u64,        // first cycle the ibuf may refill after a redirect
     logger: Arc<Logger>,
     gmem: Arc<RwLock<FlatMemory>>,
 }
@@ -43,6 +44,7 @@ impl ModuleBehaviors for Warp {
         self.state_mut().csr_file.reset();
         self.ibuf.clear();
         self.reg_ready.fill(0);
+        self.fetch_ready = 0;
     }
 }
 
@@ -142,6 +144,7 @@ impl Warp {
             wid: config.lane_config.warp_id,
             ibuf: VecDeque::new(),
             reg_ready: vec![0; config.num_regs],
+            fetch_ready: 0,
             logger: logger.clone(),
             gmem,
         };

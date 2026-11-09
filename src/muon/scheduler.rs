@@ -293,6 +293,11 @@ impl Scheduler {
         self.schedule(wid)
     }
 
+    /// next pc warp `wid` fetches
+    pub fn pc(&self, wid: usize) -> u32 {
+        self.state().pc[wid]
+    }
+
     pub fn tohost(&self) -> Option<u32> {
         self.state().tohost
     }

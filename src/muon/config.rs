@@ -11,6 +11,7 @@ pub struct MuonConfig {
     pub start_pc: u32,
     pub smem_size: usize,
     pub ibuf_depth: usize, // decoded instructions per warp available for issue
+    pub redirect_latency: u64, // issue of a pc-changing control op to the first issue at its target
     pub units: UnitsConfig,
     #[serde(skip)]
     pub lane_config: LaneConfig,
@@ -28,6 +29,7 @@ impl Default for MuonConfig {
             start_pc: 0x10000000u32,
             smem_size: 0x10_0000, // includes MMIO space
             ibuf_depth: 4,
+            redirect_latency: 1,
             units: UnitsConfig::default(),
             lane_config: LaneConfig::default(),
         }

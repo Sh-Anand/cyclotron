@@ -126,8 +126,9 @@ impl MuonCore {
     }
 
     /// top up warp `wid`'s ibuf; non-control instructions execute as they are decoded
-    fn refill(&mut self, wid: usize, smem: &mut FlatMemory) -> Result<(), ExecErr> {
-        while self.warps[wid].ibuf.len() < self.conf().ibuf_depth
+    fn refill(&mut self, wid: usize, now: u64, smem: &mut FlatMemory) -> Result<(), ExecErr> {
+        while self.warps[wid].fetch_ready <= now
+            && self.warps[wid].ibuf.len() < self.conf().ibuf_depth
             && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
         {
             let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap());
@@ -144,12 +145,17 @@ impl MuonCore {
         let mut smem = smem.write().expect("shared memory lock poisoned");
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
-            self.refill(w, &mut smem)?;
+            self.refill(w, now, &mut smem)?;
         }
         if let Some((wid, i)) = self.pick_warp(now) {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
-            uop.inst.is_control().then(|| self.exec(wid, uop, &mut smem)).transpose()?;
+            if uop.inst.is_control() {
+                self.exec(wid, uop, &mut smem)?;
+                if self.scheduler.pc(wid) != uop.inst.pc + 8 {
+                    self.warps[wid].fetch_ready = now + self.conf().redirect_latency; // redirect
+                }
+            }
             if let Some(rd) = uop.inst.rd() {
                 let unit = uop.inst.unit();
                 self.warps[wid].reg_ready[rd] = now + self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
