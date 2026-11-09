@@ -87,6 +87,11 @@ impl Default for UnitsConfig {
     }
 }
 
+impl Unit {
+    pub const ALL: [Unit; 8] =
+        [Unit::Alu, Unit::Mul, Unit::Div, Unit::Fp, Unit::FpDivSqrt, Unit::FpExp, Unit::Sfu, Unit::Lsu];
+}
+
 impl UnitsConfig {
     pub fn get(&self, unit: Unit) -> UnitConfig {
         match unit {

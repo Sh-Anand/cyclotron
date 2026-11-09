@@ -3,6 +3,7 @@ use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig, Unit};
 use crate::muon::decode::{DecodedInst, MicroOp};
 use crate::muon::scheduler::Scheduler;
+use crate::muon::stats::CoreStats;
 use crate::muon::warp::{ExecErr, Warp};
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
@@ -25,6 +26,7 @@ pub struct MuonCore {
     tracer: Arc<Tracer>,
     mem_tracer: Arc<MemTracer>,
     pub trace: bool,
+    pub stats: CoreStats, // accumulates across CTAs; not cleared by reset
 }
 
 impl MuonCore {
@@ -62,6 +64,7 @@ impl MuonCore {
             tracer: Arc::new(Tracer::new(&config)),
             mem_tracer: Arc::new(MemTracer::new()),
             trace: false,
+            stats: CoreStats::default(),
         };
 
         info!(
@@ -150,6 +153,7 @@ impl MuonCore {
         if let Some((wid, i)) = self.pick_warp(now) {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
+            self.stats.unit_issued[uop.inst.unit() as usize] += 1;
             if uop.inst.is_control() {
                 self.exec(wid, uop, &mut smem)?;
                 if self.scheduler.pc(wid) != uop.inst.pc + 8 {
@@ -160,6 +164,10 @@ impl MuonCore {
                 let unit = uop.inst.unit();
                 self.warps[wid].reg_ready[rd] = now + self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
             }
+        } else if self.warps.iter().any(|w| !w.ibuf.is_empty()) {
+            self.stats.stall_deps += 1;
+        } else {
+            self.stats.stall_fetch += 1;
         }
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);

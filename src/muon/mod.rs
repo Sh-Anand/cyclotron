@@ -5,4 +5,5 @@ pub mod execute;
 pub mod config;
 pub mod csr;
 pub mod scheduler;
+pub mod stats;
 pub mod warp;
