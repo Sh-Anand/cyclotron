@@ -266,7 +266,6 @@ pub struct RegFile {
 }
 
 impl ModuleBehaviors for RegFile {
-    fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
         // let gtid = self.conf().num_lanes * self.conf().num_warps *

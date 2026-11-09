@@ -1,15 +1,7 @@
 use std::sync::Arc;
 
 pub trait ModuleBehaviors {
-    fn tick_one(&mut self);
-    fn tick(&mut self, cycles: u64) {
-        for _ in 0..cycles {
-            self.tick_one()
-        }
-    }
-    fn is_stalled(&self) -> bool {
-        false
-    }
+    fn tick_one(&mut self) {}
     fn reset(&mut self) {}
 }
 

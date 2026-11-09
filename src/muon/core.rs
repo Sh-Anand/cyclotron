@@ -41,7 +41,7 @@ impl MuonCore {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
             base: Default::default(),
-            scheduler: Scheduler::new(Arc::clone(&config), core_id),
+            scheduler: Scheduler::new(Arc::clone(&config)),
             warps: (0..num_warps)
                 .map(|warp_id| {
                     Warp::new(
@@ -141,9 +141,8 @@ impl MuonCore {
         Ok(())
     }
 
-    /// Advance the core by one cycle: issue one instruction from one warp.
-    pub fn process(&mut self) -> Result<(), ExecErr> {
-        let now = self.base.cycle;
+    /// Advance the core by one cycle, cycle `now` of the one global clock: issue one instruction from one warp.
+    pub fn process(&mut self, now: u64) -> Result<(), ExecErr> {
         let smem = self.shared_mem.clone();
         let mut smem = smem.write().expect("shared memory lock poisoned");
         let active = self.scheduler.active_warp_mask();
@@ -169,8 +168,6 @@ impl MuonCore {
         } else {
             self.stats.stall_fetch += 1;
         }
-        self.scheduler.tick_one();
-        self.warps.iter_mut().for_each(Warp::tick_one);
         Ok(())
     }
 
@@ -208,28 +205,12 @@ impl MuonCore {
 
 }
 
-module!(
-    MuonCore,
-    MuonState,
-    MuonConfig,
-    fn get_children(&mut self) -> Vec<&mut dyn ModuleBehaviors> {
-        todo!()
-    }
-);
+module!(MuonCore, MuonState, MuonConfig,);
 
 impl ModuleBehaviors for MuonCore {
-    fn tick_one(&mut self) {
-        self.base.cycle += 1;
-    }
-
     fn reset(&mut self) {
         self.scheduler.reset();
         self.warps.iter_mut().for_each(Warp::reset);
     }
 }
 
-impl MuonCore {
-    pub fn time(&self) -> u64 {
-        self.base.cycle
-    }
-}

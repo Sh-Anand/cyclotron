@@ -35,10 +35,6 @@ pub struct Warp {
 }
 
 impl ModuleBehaviors for Warp {
-    fn tick_one(&mut self) {
-        self.base().cycle += 1;
-    }
-
     fn reset(&mut self) {
         self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
         self.state_mut().csr_file.reset();
@@ -210,8 +206,7 @@ impl Warp {
 
                 info!(
                     self.logger,
-                    "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
-                    self.base.cycle,
+                    "[{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
                     self.name(),
                     pc,
                     writeback.rd_addr,

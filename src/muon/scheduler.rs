@@ -37,9 +37,7 @@ pub struct SchedulerState {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Schedule {
     pub pc: u32,
-    pub warp: usize,
     pub mask: u32,
-    pub active_warps: u32,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -55,11 +53,10 @@ pub struct SchedulerWriteback {
 #[derive(Debug, Default)]
 pub struct Scheduler {
     base: ModuleBase<SchedulerState, MuonConfig>,
-    cid: usize,
 }
 
 impl Scheduler {
-    pub fn new(config: Arc<MuonConfig>, cid: usize) -> Self {
+    pub fn new(config: Arc<MuonConfig>) -> Self {
         let num_warps = config.num_warps;
         info!("scheduler instantiated with {} warps!", num_warps);
         info!("start_pc: {}", config.start_pc);
@@ -75,7 +72,6 @@ impl Scheduler {
                 },
                 ..ModuleBase::default()
             },
-            cid,
         };
         me.init_conf(config);
         me
@@ -278,19 +274,10 @@ impl Scheduler {
     pub fn schedule(&mut self, wid: usize) -> Option<Schedule> {
         self.state().active_warps.bit(wid).then(|| {
             let pc = self.state().pc[wid];
-            let sched = Schedule {
-                pc,
-                warp: wid,
-                mask: self.base.state.thread_masks[wid],
-                active_warps: self.base.state.active_warps, // for csr writing
-            };
+            let sched = Schedule { pc, mask: self.base.state.thread_masks[wid] };
             self.state_mut().pc[wid] = pc.wrapping_add(8);
             sched
         })
-    }
-
-    pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
-        self.schedule(wid)
     }
 
     /// next pc warp `wid` fetches
@@ -315,11 +302,6 @@ impl Scheduler {
 module!(Scheduler, SchedulerState, MuonConfig,);
 
 impl ModuleBehaviors for Scheduler {
-    fn tick_one(&mut self) {
-        self.base.cycle += 1;
-        info!("core {} active warps {:08b}", self.cid, self.base.state.active_warps);
-    }
-
     fn reset(&mut self) {
         self.state_mut().thread_masks = [self.all_one_bitmask()].repeat(self.conf().num_warps);
         self.base.state.active_warps = 0;

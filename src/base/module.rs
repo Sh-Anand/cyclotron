@@ -3,8 +3,6 @@ use std::sync::{Arc, OnceLock};
 
 #[derive(Debug)]
 pub struct ModuleBase<T, C> {
-    pub cycle: u64,
-    pub frequency: u64,
     pub state: T,
     pub config: OnceLock<Arc<C>>,
 }
@@ -12,8 +10,6 @@ pub struct ModuleBase<T, C> {
 impl<T: Default, C: Default> Default for ModuleBase<T, C> {
     fn default() -> Self {
         Self {
-            cycle: 0,
-            frequency: 500 << 20, // 524.288 MHz
             state: T::default(),
             config: OnceLock::new(),
         }
@@ -34,18 +30,6 @@ pub trait IsModule: ModuleBehaviors {
 
     fn state(&self) -> &Self::StateType {
         &self.base_ref().state
-    }
-
-    /// get all children, parameterizable or not
-    fn get_children(&mut self) -> Vec<&mut dyn ModuleBehaviors> {
-        vec![]
-    }
-
-    // get only parameterizable children
-    fn get_param_children(
-        &mut self,
-    ) -> Vec<&mut dyn Parameterizable<ConfigType = Self::ConfigType>> {
-        vec![]
     }
 }
 

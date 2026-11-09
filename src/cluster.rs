@@ -10,6 +10,7 @@ pub struct Cluster {
     id: usize,
     pub cores: Vec<MuonCore>,
     scheduled_threadblocks: usize,
+    cycle: u64, // the clock for standalone cyclotron; gluon passes its own
 }
 
 impl Cluster {
@@ -38,6 +39,7 @@ impl Cluster {
             id,
             cores,
             scheduled_threadblocks: 0,
+            cycle: 0,
         }
     }
 
@@ -67,9 +69,9 @@ impl Cluster {
 
 impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
+        self.cycle += 1;
         for core in &mut self.cores {
-            core.tick_one();
-            core.process().unwrap();
+            core.process(self.cycle).unwrap();
         }
     }
 
