@@ -1,5 +1,4 @@
 use crate::base::behavior::*;
-use crate::base::mem::HasMemory;
 use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
 use crate::muon::sm::SM;
@@ -9,7 +8,7 @@ use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace_db::{default_trace_db_path, TraceDb};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 pub struct Sim {
     pub config: SimConfig,
@@ -129,7 +128,7 @@ pub struct CyclotronTop {
     cycle: u64,      // the global clock; gluon keeps its own
     pub sm: SM,
     pub timeout: u64,
-    pub gmem: Arc<RwLock<FlatMemory>>,
+    pub gmem: FlatMemory,
 }
 
 impl CyclotronTop {
@@ -145,12 +144,10 @@ impl CyclotronTop {
         let mut gmem = FlatMemory::new(Some(config.mem_config));
         gmem.copy_elf(&imem);
 
-        let gmem = Arc::new(RwLock::new(gmem));
-
         CyclotronTop {
             scheduled: false,
             cycle: 0,
-            sm: SM::new(0, config.muon_config, logger, gmem.clone()),
+            sm: SM::new(0, config.muon_config, logger),
             timeout: config.timeout,
             gmem,
         }
@@ -163,28 +160,6 @@ impl CyclotronTop {
         }
     }
 
-    /// Load a word from gmem.
-    pub fn gmem_load(&self, addr: u32) -> [u8; 4] {
-        self.gmem
-            .read()
-            .expect("lock poisoned")
-            .read_n::<4>(addr as usize)
-            .expect("load failed")
-    }
-
-    /// Store a data with given size to gmem.  Doesn't support partial writes.
-    pub fn gmem_store(&self, addr: u32, data: u32, size: u32) {
-        let mut gmem = self.gmem.write().expect("lock poisoned");
-        let data_bytes = data.to_le_bytes();
-        match size {
-            0 => gmem.write(addr as usize, &data_bytes[0..1]), // store byte
-            1 => gmem.write(addr as usize, &data_bytes[0..2]), // store half
-            2 => gmem.write(addr as usize, &data_bytes[0..4]), // store word
-            _ => panic!("unimplemented store type"),
-        }
-        .expect("store failed");
-    }
-
     pub fn finished(&self) -> bool {
         self.sm.cores.iter().all(MuonCore::all_warps_retired)
     }
@@ -194,7 +169,7 @@ impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
         self.schedule();
         self.cycle += 1;
-        self.sm.tick(self.cycle);
+        self.sm.tick(self.cycle, &mut self.gmem);
         if let Some(err) = self.sm.errs.iter().find_map(Option::as_ref) {
             panic!("{err:?}");
         }

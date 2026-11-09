@@ -4,25 +4,24 @@ use crate::muon::warp::ExecErr;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use std::ops::Range;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// Cores sharing one smem; a command processor launches CTAs onto and retires them from it.
 pub struct SM {
     pub config: MuonConfig,
     pub cores: Vec<MuonCore>,
     pub errs: Vec<Option<ExecErr>>, // per core: error that stopped it
+    smem: FlatMemory,
     smem_used: Vec<Range<usize>>,   // allocated smem ranges, sorted by start
     pub frees: usize,               // CTAs freed so far; launchers retry placement only after one
 }
 
 impl SM {
-    pub fn new(id: usize, config: MuonConfig, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
-        let smem = Arc::new(RwLock::new(FlatMemory::new_with_size(config.smem_size, None)));
+    pub fn new(id: usize, config: MuonConfig, logger: &Arc<Logger>) -> Self {
         SM {
             config,
-            cores: (0..config.num_cores)
-                .map(|i| MuonCore::new(Arc::new(config), id, i, logger, gmem.clone(), smem.clone()))
-                .collect(),
+            cores: (0..config.num_cores).map(|i| MuonCore::new(Arc::new(config), id, i, logger)).collect(),
+            smem: FlatMemory::new_with_size(config.smem_size, None),
             errs: vec![None; config.num_cores],
             smem_used: vec![],
             frees: 0,
@@ -88,11 +87,11 @@ impl SM {
         self.cores.iter().zip(&self.errs).any(|(core, err)| err.is_none() && core.scheduler.active_warp_mask() != 0)
     }
 
-    pub fn tick(&mut self, now: u64) {
+    pub fn tick(&mut self, now: u64, gmem: &mut FlatMemory) {
         // cores with running warps; a core that errored stops until its CTAs are freed
         for (core, err) in self.cores.iter_mut().zip(self.errs.iter_mut()) {
             if err.is_none() && core.scheduler.active_warp_mask() != 0 {
-                if let Err(e) = core.process(now) {
+                if let Err(e) = core.process(now, &mut self.smem, gmem) {
                     *err = Some(e);
                 }
             }

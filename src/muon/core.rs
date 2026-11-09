@@ -9,7 +9,7 @@ use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::{MemTracer, Tracer};
 use crate::utils::BitSlice;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Default)]
 pub struct MuonState {
@@ -23,7 +23,6 @@ pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
-    pub(crate) shared_mem: Arc<RwLock<FlatMemory>>,
 
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
@@ -38,8 +37,6 @@ impl MuonCore {
         cluster_id: usize,
         core_id: usize,
         logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
-        shared_mem: Arc<RwLock<FlatMemory>>,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
@@ -58,11 +55,9 @@ impl MuonCore {
                             ..*config
                         }),
                         logger,
-                        gmem.clone(),
                     )
                 })
                 .collect(),
-            shared_mem,
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
             mem_tracer: Arc::new(MemTracer::new()),
@@ -160,32 +155,30 @@ impl MuonCore {
     }
 
     /// top up warp `wid`'s ibuf; non-control instructions execute as they are decoded
-    fn refill(&mut self, wid: usize, now: u64, smem: &mut FlatMemory) -> Result<(), ExecErr> {
+    fn refill(&mut self, wid: usize, now: u64, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
         while self.warps[wid].fetch_ready <= now
             && self.warps[wid].ibuf.len() < self.conf().ibuf_depth
             && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
         {
-            let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap());
-            (!uop.inst.is_control()).then(|| self.exec(wid, uop, smem)).transpose()?;
+            let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap(), gmem);
+            (!uop.inst.is_control()).then(|| self.exec(wid, uop, smem, gmem)).transpose()?;
             self.warps[wid].ibuf.push_back(uop);
         }
         Ok(())
     }
 
     /// Advance the core by one cycle, cycle `now` of the one global clock: issue one instruction from one warp.
-    pub fn process(&mut self, now: u64) -> Result<(), ExecErr> {
-        let smem = self.shared_mem.clone();
-        let mut smem = smem.write().expect("shared memory lock poisoned");
+    pub fn process(&mut self, now: u64, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
-            self.refill(w, now, &mut smem)?;
+            self.refill(w, now, smem, gmem)?;
         }
         if let Some((wid, i)) = self.pick_warp(now) {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.inst.unit() as usize] += 1;
             if uop.inst.is_control() {
-                self.exec(wid, uop, &mut smem)?;
+                self.exec(wid, uop, smem, gmem)?;
                 if self.scheduler.pc(wid) != uop.inst.pc + 8 {
                     self.warps[wid].fetch_ready = now + self.conf().redirect_latency; // redirect
                 }
@@ -203,19 +196,13 @@ impl MuonCore {
     }
 
     /// Execute one instruction functionally and trace it.
-    fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory) -> Result<(), ExecErr> {
-        let (wb, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem)?;
+    fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
+        let (wb, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
         if self.trace {
             Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(wid, &wb);
             Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);
         }
         Ok(())
-    }
-
-    /// Exposes a non-mutating fetch interface for the core.
-    pub fn fetch(&self, warp: u32, pc: u32) -> u64 {
-        // warp is not really necessary here
-        self.warps[warp as usize].fetch(pc)
     }
 
     pub fn get_tracer_mut(&mut self) -> &mut Tracer {

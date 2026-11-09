@@ -14,9 +14,8 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
-use std::ops::DerefMut;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Default)]
 pub struct WarpState {
@@ -32,7 +31,6 @@ pub struct Warp {
     pub fetch_ready: u64,        // first cycle the ibuf may refill after a redirect
     pub regs: usize,             // regs per thread allocated to this slot
     logger: Arc<Logger>,
-    gmem: Arc<RwLock<FlatMemory>>,
 }
 
 impl ModuleBehaviors for Warp {
@@ -125,7 +123,6 @@ impl Warp {
     pub fn new(
         config: Arc<MuonConfig>,
         logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
     ) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
@@ -144,7 +141,6 @@ impl Warp {
             fetch_ready: 0,
             regs: 0,
             logger: logger.clone(),
-            gmem,
         };
         me.init_conf(config);
         me
@@ -158,20 +154,9 @@ impl Warp {
         )
     }
 
-    /// Returns un-decoded instruction bits at a given PC.
-    pub fn fetch(&self, pc: u32) -> u64 {
-        let inst_bytes = self
-            .gmem
-            .write()
-            .expect("gmem poisoned")
-            .read_n::<8>(pc as usize)
-            .expect("failed to fetch instruction");
-        u64::from_le_bytes(inst_bytes)
-    }
-
-    pub fn frontend(&mut self, schedule: Schedule) -> MicroOp {
+    pub fn frontend(&mut self, schedule: Schedule, gmem: &FlatMemory) -> MicroOp {
         // fetch
-        let inst = self.fetch(schedule.pc);
+        let inst = u64::from_le_bytes(gmem.read_n::<8>(schedule.pc as usize).expect("failed to fetch instruction"));
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
         MicroOp { inst, tmask: schedule.mask }
@@ -182,6 +167,7 @@ impl Warp {
         uop: MicroOp,
         scheduler: &mut Scheduler,
         smem: &mut FlatMemory,
+        gmem: &mut FlatMemory,
     ) -> Result<(Writeback, Vec<MemTraceLine>), ExecErr> {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
@@ -198,7 +184,7 @@ impl Warp {
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
             let ex_wb = self.execute_nomem(issued, tmask, scheduler);
-            self.mem(&ex_wb, smem)
+            self.mem(&ex_wb, smem, gmem)
         }));
 
         // writeback
@@ -234,18 +220,6 @@ impl Warp {
         ExecuteUnit::collect(&uop, rf)
     }
 
-    /// Execute a single-warp issued instruction and return a writeback bundle.
-    pub fn execute(
-        &mut self,
-        issued: IssuedInst,
-        tmask: u32,
-        scheduler: &mut Scheduler,
-        smem: &mut FlatMemory,
-    ) -> (Writeback, Vec<MemTraceLine>) {
-        let ex_wb = self.execute_nomem(issued, tmask, scheduler);
-        self.mem(&ex_wb, smem)
-    }
-
     /// Execute stage, but only generates mem requests without serving them with the internal
     /// gmem/smem.
     pub fn execute_nomem(
@@ -269,6 +243,7 @@ impl Warp {
         &mut self,
         ex_writeback: &ExWriteback,
         smem: &mut FlatMemory,
+        gmem: &mut FlatMemory,
     ) -> (Writeback, Vec<MemTraceLine>) {
         // most instructions touch no memory: pass the EX writeback straight through
         if ex_writeback.mem_req.iter().all(Option::is_none) {
@@ -286,7 +261,7 @@ impl Warp {
         let mem_responses = ex_writeback
             .mem_req
             .iter()
-            .map(|oreq| oreq.as_ref().map(|req| self.mem_response(req, smem)))
+            .map(|oreq| oreq.as_ref().map(|req| Self::mem_response(req, smem, gmem)))
             .collect::<Vec<_>>();
         let mem_trace_lines = ex_writeback
             .mem_req
@@ -347,13 +322,8 @@ impl Warp {
     }
 
     /// Handle a per-lane memory request and generate a MemResponse.
-    pub fn mem_response(&mut self, mem_req: &MemRequest, smem: &mut FlatMemory) -> MemResponse {
-        let mut gmem = self.gmem.write().expect("lock poisoned");
-        let mem = if mem_req.is_smem {
-            smem
-        } else {
-            gmem.deref_mut()
-        };
+    pub fn mem_response(mem_req: &MemRequest, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> MemResponse {
+        let mem = if mem_req.is_smem { smem } else { gmem };
 
         let addr = mem_req.addr;
         let addr_aligned = addr >> 2 << 2;
