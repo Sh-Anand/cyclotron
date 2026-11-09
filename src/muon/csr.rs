@@ -16,6 +16,7 @@ pub struct CSRFile {
     pub thread_idx: Vec<(u32, u32, u32)>, // per lane
     pub bp: u32,
     pub smem_base: u32,
+    pub cmd_id: u64, // launching command: stream id << 56 | per-stream command id
     fcsr: u32, // frm[7:5] | fflags[4:0]
     acc: u32,  // cisc accelerator
 }
@@ -62,6 +63,8 @@ impl CSRFile {
             0xfc8 => self.thread_idx[lane].2,
             0xfc9 => self.bp,
             0xfca => self.smem_base,
+            0xfcb => self.cmd_id as u32,
+            0xfcc => (self.cmd_id >> 32) as u32,
             _ => panic!("reading nonexistent csr 0x{:x}", addr),
         }
     }
@@ -83,10 +86,12 @@ impl CSRFile {
         thread_idxs: &[(u32, u32, u32)],
         bp: u32,
         smem_base: u32,
+        cmd_id: u64,
     ) {
         self.block_idx = block_idx;
         self.thread_idx[..thread_idxs.len()].copy_from_slice(thread_idxs);
         self.bp = bp;
         self.smem_base = smem_base;
+        self.cmd_id = cmd_id;
     }
 }

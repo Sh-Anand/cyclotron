@@ -416,9 +416,10 @@ impl Warp {
         thread_idxs: &[(u32, u32, u32)],
         bp: u32,
         smem_base: u32,
+        cmd_id: u64,
     ) {
         assert!(thread_idxs.len() > 0);
-        self.base.state.csr_file.set_block_threads_bp(block_idx, thread_idxs, bp, smem_base);
+        self.base.state.csr_file.set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
     }
 
 }

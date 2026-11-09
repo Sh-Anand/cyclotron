@@ -89,10 +89,11 @@ impl MuonCore {
         warps: &[(usize, Vec<(u32, u32, u32)>)], // (wid, thread idxs)
         bp: u32,
         smem_base: u32,
+        cmd_id: u64,
     ) {
         for (wid, thread_idxs) in warps {
             self.scheduler.spawn_warp(*wid, pc, thread_idxs.len());
-            self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base);
+            self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
         }
     }
 
