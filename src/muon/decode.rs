@@ -66,6 +66,10 @@ impl DecodedInst {
         )
     }
 
+    pub fn is_barrier(&self) -> bool {
+        self.opcode == Opcode::CUSTOM0 && self.f3 == 4 && self.f7 == 0
+    }
+
     /// the functional unit this instruction issues to (branches and jumps use the ALU, as in Muon)
     pub fn unit(&self) -> Unit {
         match self.opcode {

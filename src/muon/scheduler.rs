@@ -216,9 +216,7 @@ impl Scheduler {
                 // join is not visible to cyclotron in cosim
                 SchedulerWriteback::default()
             }
-            SFUType::BAR => {
-                panic!("vx_bar is not supported")
-            }
+            SFUType::BAR => SchedulerWriteback::default(),
             SFUType::PRED => {
                 let invert = decoded_inst.rd_addr != 0;
                 let pred_mask = rs1

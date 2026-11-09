@@ -29,6 +29,7 @@ pub struct MuonCore {
     mem_tracer: Arc<MemTracer>,
     pub trace: bool,
     pub stats: CoreStats, // accumulates across CTAs; not cleared by reset
+    pub arrived: Option<CtaId>, // CTA of a warp that just issued a barrier
 }
 
 impl MuonCore {
@@ -63,6 +64,7 @@ impl MuonCore {
             mem_tracer: Arc::new(MemTracer::new()),
             trace: false,
             stats: CoreStats::default(),
+            arrived: None,
         };
 
         info!(
@@ -90,6 +92,7 @@ impl MuonCore {
             self.scheduler.spawn_warp(*wid, pc, thread_idxs.len());
             self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
             self.warps[*wid].regs = regs;
+            self.warps[*wid].fetch_ready = 0;
         }
     }
 
@@ -100,10 +103,9 @@ impl MuonCore {
         (0..self.conf().num_warps).filter(|&w| !allocated.bit(w)).take((self.conf().regs_per_core - used) / regs).collect()
     }
 
-    /// warps in `mask` that belong to CTA `id`, by their CSRs
-    fn cta_warps(&self, id: CtaId, mask: u32) -> impl Iterator<Item = usize> + '_ {
-        let csrs = |w: usize| &self.warps[w].base.state.csr_file;
-        (0..self.conf().num_warps).filter(move |&w| mask.bit(w) && (csrs(w).cmd_id, csrs(w).block_idx) == id)
+    /// warps in `mask` that belong to CTA `id`
+    pub(crate) fn cta_warps(&self, id: CtaId, mask: u32) -> impl Iterator<Item = usize> + '_ {
+        (0..self.conf().num_warps).filter(move |&w| mask.bit(w) && self.warps[w].cta() == id)
     }
 
     pub fn cta_live(&self, id: CtaId) -> bool {
@@ -170,7 +172,10 @@ impl MuonCore {
             self.stats.unit_issued[uop.inst.unit() as usize] += 1;
             if uop.inst.is_control() {
                 self.exec(wid, uop, smem, gmem)?;
-                if self.scheduler.pc(wid) != uop.inst.pc + 8 {
+                if uop.inst.is_barrier() {
+                    self.warps[wid].fetch_ready = u64::MAX;
+                    self.arrived = Some(self.warps[wid].cta());
+                } else if self.scheduler.pc(wid) != uop.inst.pc + 8 {
                     self.warps[wid].fetch_ready = now + self.conf().redirect_latency; // redirect
                 }
             }
@@ -180,6 +185,8 @@ impl MuonCore {
             }
         } else if self.warps.iter().any(|w| !w.ibuf.is_empty()) {
             self.stats.stall_deps += 1;
+        } else if self.warps.iter().any(|w| w.fetch_ready == u64::MAX) {
+            self.stats.stall_barrier += 1;
         } else {
             self.stats.stall_fetch += 1;
         }

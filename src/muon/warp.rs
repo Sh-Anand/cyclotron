@@ -3,6 +3,7 @@ use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
 use crate::info;
 use crate::muon::config::MuonConfig;
+use crate::muon::core::CtaId;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
 use crate::muon::execute::ExecuteUnit;
@@ -380,6 +381,11 @@ impl Warp {
         for (lrf, ldata) in zip(rf, &wb.rd_data) {
             ldata.map(|data| lrf.write_gpr(rd_addr, data));
         }
+    }
+
+    pub fn cta(&self) -> CtaId {
+        let csrs = &self.base.state.csr_file;
+        (csrs.cmd_id, csrs.block_idx)
     }
 
     pub fn set_block_threads_bp(

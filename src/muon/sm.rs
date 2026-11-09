@@ -96,5 +96,18 @@ impl SM {
                 }
             }
         }
+        for c in 0..self.cores.len() {
+            if let Some(id) = self.cores[c].arrived.take() {
+                let parked = |core: &MuonCore| {
+                    let active = core.scheduler.active_warp_mask();
+                    core.cta_warps(id, active).all(|w| core.warps[w].fetch_ready == u64::MAX)
+                };
+                if self.cores.iter().all(parked) {
+                    (self.cores.iter_mut().flat_map(|core| &mut core.warps))
+                        .filter(|w| w.fetch_ready == u64::MAX && w.cta() == id)
+                        .for_each(|w| w.fetch_ready = now + 1);
+                }
+            }
+        }
     }
 }
