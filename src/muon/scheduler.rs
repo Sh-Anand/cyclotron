@@ -23,9 +23,6 @@ pub struct IpdomPush {
 
 #[derive(Debug, Default)]
 pub struct SchedulerState {
-    /// differentiates between the initial and the final state, in both of which no active warps
-    /// exist
-    pub started: bool,
     pub active_warps: u32,
     pub allocated: u32, // warp slots held by a CTA; freed only when the whole CTA is
     pub thread_masks: Vec<u32>,
@@ -60,16 +57,14 @@ impl Scheduler {
     pub fn new(config: Arc<MuonConfig>) -> Self {
         let num_warps = config.num_warps;
         info!("scheduler instantiated with {} warps!", num_warps);
-        info!("start_pc: {}", config.start_pc);
         let mut me = Scheduler {
             base: ModuleBase::<SchedulerState, MuonConfig> {
                 state: SchedulerState {
-                    started: false,
                     active_warps: 0,
                     allocated: 0,
                     thread_masks: vec![0u32; num_warps],
                     tohost: None,
-                    pc: vec![config.start_pc; num_warps],
+                    pc: vec![0; num_warps], // set when a warp spawns
                     ipdom_stack: (0..num_warps).map(|_| VecDeque::new()).collect(),
                 },
                 ..ModuleBase::default()
@@ -88,16 +83,9 @@ impl Scheduler {
         }
     }
 
-    pub fn spawn_single_warp(&mut self) {
-        self.state_mut().started = true;
-        self.state_mut().thread_masks = [self.all_one_bitmask()].repeat(self.conf().num_warps);
-        self.state_mut().active_warps = 1;
-    }
-
     /// start warp `wid` at `pc` with `lanes` active threads; other warps are untouched
     pub fn spawn_warp(&mut self, wid: usize, pc: u32, lanes: usize) {
         assert!(!self.base.state.allocated.bit(wid), "warp {wid} still allocated");
-        self.base.state.started = true;
         self.base.state.pc[wid] = pc;
         self.base.state.thread_masks[wid] = self.all_one_bitmask() >> (self.conf().num_lanes - lanes);
         self.base.state.active_warps.mut_bit(wid, true);
@@ -294,11 +282,6 @@ impl Scheduler {
 
     pub fn active_warp_mask(&self) -> u32 {
         self.base.state.active_warps
-    }
-
-    // TODO: This should differentiate between different threadblocks.
-    pub fn all_warps_retired(&self) -> bool {
-        self.state().started && (self.state().active_warps == 0)
     }
 }
 

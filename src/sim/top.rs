@@ -155,13 +155,14 @@ impl CyclotronTop {
 
     pub fn schedule(&mut self) {
         if !self.scheduled {
-            self.sm.cores.iter_mut().for_each(MuonCore::spawn_single_warp);
+            let (pc, lanes) = (self.sm.config.start_pc, self.sm.config.num_lanes);
+            self.sm.cores.iter_mut().for_each(|core| core.scheduler.spawn_warp(0, pc, lanes));
             self.scheduled = true;
         }
     }
 
     pub fn finished(&self) -> bool {
-        self.sm.cores.iter().all(MuonCore::all_warps_retired)
+        self.scheduled && !self.sm.busy()
     }
 }
 

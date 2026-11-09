@@ -75,10 +75,6 @@ impl MuonCore {
     }
 
     /// Spawn a single warp to this core.
-    pub fn spawn_single_warp(&mut self) {
-        self.scheduler.spawn_single_warp()
-    }
-
     /// spawn one CTA's warps on this core; each warp names its slot
     pub fn spawn_n_warps(
         &mut self,
@@ -120,11 +116,6 @@ impl MuonCore {
         let s = self.scheduler.state_mut();
         (s.active_warps, s.allocated) = (s.active_warps & !mask, s.allocated & !mask);
         mask != 0
-    }
-
-    // TODO: This should differentiate between different threadblocks.
-    pub fn all_warps_retired(&self) -> bool {
-        self.scheduler.all_warps_retired()
     }
 
     /// RTL-style single issue: the next warp, round-robin, with a ready ibuf entry
