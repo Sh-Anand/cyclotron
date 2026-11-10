@@ -223,6 +223,7 @@ impl Display for IssuedInst {
 pub struct MicroOp {
     pub inst: DecodedInst,
     pub tmask: u32,
+    pub smem: u8, // shared memory request: distinct words in its fullest bank; 0 if not one
 }
 
 impl std::fmt::Display for DecodedInst {

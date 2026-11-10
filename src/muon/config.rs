@@ -14,6 +14,7 @@ pub struct MuonConfig {
     pub ibuf_depth: usize, // decoded instructions per warp available for issue
     pub redirect_latency: u64, // issue of a pc-changing control op to the first issue at its target
     pub units: UnitsConfig,
+    pub smem: SmemConfig,
     #[serde(skip)]
     pub lane_config: LaneConfig,
 }
@@ -33,8 +34,23 @@ impl Default for MuonConfig {
             ibuf_depth: 4,
             redirect_latency: 1,
             units: UnitsConfig::default(),
+            smem: SmemConfig::default(),
             lane_config: LaneConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(default)]
+pub struct SmemConfig {
+    pub banks: usize, // word-interleaved
+    pub startup_latency: u64,
+    pub per_bank_latency: u64,
+}
+
+impl Default for SmemConfig {
+    fn default() -> Self {
+        Self { banks: 32, startup_latency: 8, per_bank_latency: 1 }
     }
 }
 

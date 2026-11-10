@@ -121,17 +121,17 @@ impl MuonCore {
     }
 
     /// RTL-style single issue: the next warp, round-robin, with a ready ibuf entry
-    fn pick_warp(&mut self, now: u64) -> Option<(usize, usize)> {
+    fn pick_warp(&mut self, now: u64, smem_free: u64) -> Option<(usize, usize)> {
         let n = self.conf().num_warps;
         let (wid, i) = (1..=n)
             .map(|k| (self.base.state.last_issued + k) % n)
-            .find_map(|w| self.ready_entry(w, now).map(|i| (w, i)))?;
+            .find_map(|w| self.ready_entry(w, now, smem_free).map(|i| (w, i)))?;
         self.base.state.last_issued = wid;
         Some((wid, i))
     }
 
     /// oldest ibuf entry of warp `w` with no hazard on older entries and its registers ready at `now`
-    fn ready_entry(&self, w: usize, now: u64) -> Option<usize> {
+    fn ready_entry(&self, w: usize, now: u64, smem_free: u64) -> Option<usize> {
         let warp = &self.warps[w];
         (0..warp.ibuf.len()).find(|&i| {
             let u = &warp.ibuf[i].inst;
@@ -144,6 +144,7 @@ impl MuonCore {
             (i == 0 || !u.is_control()) // control issues last
                 && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
                 && u.rs().chain(rd).all(|r| warp.reg_ready[r] <= now) // scoreboard: RAW, WAW
+                && (warp.ibuf[i].smem == 0 || smem_free <= now) // shared memory serves one request at a time
         })
     }
 
@@ -153,20 +154,20 @@ impl MuonCore {
             && self.warps[wid].ibuf.len() < self.conf().ibuf_depth
             && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
         {
-            let uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap(), gmem);
-            (!uop.inst.is_control()).then(|| self.exec(wid, uop, smem, gmem)).transpose()?;
+            let mut uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap(), gmem);
+            uop.smem = if uop.inst.is_control() { 0 } else { self.exec(wid, uop, smem, gmem)? };
             self.warps[wid].ibuf.push_back(uop);
         }
         Ok(())
     }
 
     /// Advance the core by one cycle, cycle `now` of the one global clock: issue one instruction from one warp.
-    pub fn process(&mut self, now: u64, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
+    pub fn process(&mut self, now: u64, smem: &mut FlatMemory, smem_free: &mut u64, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
             self.refill(w, now, smem, gmem)?;
         }
-        if let Some((wid, i)) = self.pick_warp(now) {
+        if let Some((wid, i)) = self.pick_warp(now, *smem_free) {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.inst.unit() as usize] += 1;
@@ -179,9 +180,15 @@ impl MuonCore {
                     self.warps[wid].fetch_ready = now + self.conf().redirect_latency; // redirect
                 }
             }
+            let unit = uop.inst.unit();
+            let done = if uop.smem > 0 {
+                *smem_free = now + uop.smem as u64 * self.conf().smem.per_bank_latency;
+                *smem_free + self.conf().smem.startup_latency
+            } else {
+                now + self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency
+            };
             if let Some(rd) = uop.inst.rd() {
-                let unit = uop.inst.unit();
-                self.warps[wid].reg_ready[rd] = now + self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
+                self.warps[wid].reg_ready[rd] = done;
             }
         } else if self.warps.iter().any(|w| !w.ibuf.is_empty()) {
             self.stats.stall_deps += 1;
@@ -193,14 +200,19 @@ impl MuonCore {
         Ok(())
     }
 
-    /// Execute one instruction functionally and trace it.
-    fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
+    /// Execute one instruction functionally and trace it; returns its `MicroOp::smem` count.
+    fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<u8, ExecErr> {
         let (wb, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
         if self.trace {
             Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(wid, &wb);
             Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);
         }
-        Ok(())
+        let banks = self.conf().smem.banks;
+        let mut words: Vec<_> = // (bank, word) of each shared memory access
+            mem_lines.iter().filter(|l| l.is_smem).map(|l| (l.address as usize / 4 % banks, l.address / 4)).collect();
+        words.sort_unstable();
+        words.dedup(); // lanes on the same word count once
+        Ok(words.chunk_by(|a, b| a.0 == b.0).map(<[_]>::len).max().unwrap_or(0) as u8)
     }
 
     pub fn get_tracer_mut(&mut self) -> &mut Tracer {

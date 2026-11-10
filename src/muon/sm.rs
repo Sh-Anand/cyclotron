@@ -12,6 +12,7 @@ pub struct SM {
     pub cores: Vec<MuonCore>,
     pub errs: Vec<Option<ExecErr>>, // per core: error that stopped it
     smem: FlatMemory,
+    smem_free: u64,                 // first cycle shared memory can start a request
     smem_used: Vec<Range<usize>>,   // allocated smem ranges, sorted by start
     pub frees: usize,               // CTAs freed so far; launchers retry placement only after one
 }
@@ -22,6 +23,7 @@ impl SM {
             config,
             cores: (0..config.num_cores).map(|i| MuonCore::new(Arc::new(config), id, i, logger)).collect(),
             smem: FlatMemory::new_with_size(config.smem_size, None),
+            smem_free: 0,
             errs: vec![None; config.num_cores],
             smem_used: vec![],
             frees: 0,
@@ -91,7 +93,7 @@ impl SM {
         // cores with running warps; a core that errored stops until its CTAs are freed
         for (core, err) in self.cores.iter_mut().zip(self.errs.iter_mut()) {
             if err.is_none() && core.scheduler.active_warp_mask() != 0 {
-                if let Err(e) = core.process(now, &mut self.smem, gmem) {
+                if let Err(e) = core.process(now, &mut self.smem, &mut self.smem_free, gmem) {
                     *err = Some(e);
                 }
             }

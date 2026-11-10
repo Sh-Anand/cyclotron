@@ -160,7 +160,7 @@ impl Warp {
         let inst = u64::from_le_bytes(gmem.read_n::<8>(schedule.pc as usize).expect("failed to fetch instruction"));
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
-        MicroOp { inst, tmask: schedule.mask }
+        MicroOp { inst, tmask: schedule.mask, smem: 0 }
     }
 
     pub fn backend(
