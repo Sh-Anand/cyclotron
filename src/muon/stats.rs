@@ -8,6 +8,10 @@ pub struct CoreStats {
     pub stall_deps: u64,  // entries in some window, none ready (window hazards or scoreboard)
     pub stall_fetch: u64, // windows empty, waiting on a redirect
     pub stall_barrier: u64, // windows empty, some warp waiting at a barrier
+    pub gmem_instrs: u64,
+    pub gmem_reqs: u64, // lines presented to the L0; more than one per instruction is uncoalesced
+    pub smem_instrs: u64,
+    pub smem_reqs: u64, // serial bank requests; more than one per instruction is a bank conflict
 }
 
 impl CoreStats {
@@ -16,6 +20,10 @@ impl CoreStats {
         self.stall_deps += o.stall_deps;
         self.stall_fetch += o.stall_fetch;
         self.stall_barrier += o.stall_barrier;
+        self.gmem_instrs += o.gmem_instrs;
+        self.gmem_reqs += o.gmem_reqs;
+        self.smem_instrs += o.smem_instrs;
+        self.smem_reqs += o.smem_reqs;
     }
 }
 
@@ -33,6 +41,11 @@ impl Display for CoreStats {
             self.stall_fetch, pct(self.stall_fetch),
             self.stall_barrier, pct(self.stall_barrier),
         )?;
-        Unit::ALL.iter().zip(self.unit_issued).try_for_each(|(u, n)| write!(f, " {u:?} {n}"))
+        Unit::ALL.iter().zip(self.unit_issued).try_for_each(|(u, n)| write!(f, " {u:?} {n}"))?;
+        write!(
+            f,
+            "\n  gmem {} instrs, {} requests | smem {} instrs, {} requests",
+            self.gmem_instrs, self.gmem_reqs, self.smem_instrs, self.smem_reqs
+        )
     }
 }

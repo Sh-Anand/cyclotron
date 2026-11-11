@@ -17,12 +17,13 @@ pub struct Cache {
     lines: Vec<Line>,    // sets × ways, each set newest first
     mshrs: Vec<u64>,     // cycle each frees
     bus_free: u64,       // cycle the link to the next level frees
+    pub depth: usize,    // levels below this one before DRAM
     pub accesses: u64,
     pub misses: u64,
 }
 
 impl Cache {
-    fn new(conf: CacheConfig, next: Option<usize>) -> Self {
+    fn new(conf: CacheConfig, next: Option<usize>, depth: usize) -> Self {
         Cache {
             conf,
             next,
@@ -30,6 +31,7 @@ impl Cache {
             lines: vec![Line { tag: INVALID, ready: 0, dirty: false }; conf.sets * conf.ways],
             mshrs: vec![0; conf.mshrs],
             bus_free: 0,
+            depth,
             accesses: 0,
             misses: 0,
         }
@@ -47,7 +49,8 @@ pub fn add(caches: &mut Vec<Cache>, conf: CacheConfig, next: Option<usize>) -> u
     if let Some(n) = next {
         caches[n].prev.push(i)
     }
-    caches.push(Cache::new(conf, next));
+    let depth = next.map_or(0, |n| caches[n].depth + 1);
+    caches.push(Cache::new(conf, next, depth));
     i
 }
 

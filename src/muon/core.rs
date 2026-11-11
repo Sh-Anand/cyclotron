@@ -202,12 +202,17 @@ impl MuonCore {
             let unit = uop.inst.unit();
             let latency = self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
             let done = if uop.smem > 0 {
+                self.stats.smem_instrs += 1;
+                self.stats.smem_reqs += uop.smem as u64;
                 *smem_free = now + uop.smem as u64 * self.conf().smem.per_bank_latency;
                 *smem_free + self.conf().smem.startup_latency
             } else if unit == Unit::Lsu {
                 // global memory: present each line to the L0 a cycle after it accepted the previous one
                 let (mut t, mut ready) = (now, now);
-                for line in self.warps[wid].gmem_lines.pop_front().unwrap() {
+                let lines = self.warps[wid].gmem_lines.pop_front().unwrap();
+                self.stats.gmem_instrs += 1;
+                self.stats.gmem_reqs += lines.len() as u64;
+                for line in lines {
                     let (accepted, data) = cache::access(caches, self.l0, line, t, uop.inst.is_store());
                     (t, ready) = (accepted + 1, ready.max(data));
                 }
