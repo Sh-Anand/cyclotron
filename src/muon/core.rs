@@ -150,8 +150,13 @@ impl MuonCore {
             (i == 0 || !u.is_control()) // control issues last
                 && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
                 && u.rs().chain(rd).all(|r| warp.reg_ready[r] <= now) // scoreboard: RAW, WAW
-                // one memory op at a time: per SM for shared memory, per core for global memory
-                && (!mem || if warp.ibuf[i].smem > 0 { smem_free } else { self.gmem_free } <= now)
+                // one memory op at a time: per SM for shared memory, per core for global memory.  A global
+                // op also waits for the warp's older stores, and a store for its older loads
+                && (!mem || if warp.ibuf[i].smem > 0 {
+                    smem_free
+                } else {
+                    self.gmem_free.max(warp.store_done).max(if u.is_store() { warp.load_done } else { 0 })
+                } <= now)
         })
     }
 
@@ -203,11 +208,13 @@ impl MuonCore {
                 // global memory: present each line to the L0 a cycle after it accepted the previous one
                 let (mut t, mut ready) = (now, now);
                 for line in self.warps[wid].gmem_lines.pop_front().unwrap() {
-                    let (accepted, data) = cache::access(caches, self.l0, line, t, uop.inst.rd().is_none());
+                    let (accepted, data) = cache::access(caches, self.l0, line, t, uop.inst.is_store());
                     (t, ready) = (accepted + 1, ready.max(data));
                 }
                 self.gmem_free = t;
-                ready + latency
+                let (warp, done) = (&mut self.warps[wid], ready + latency);
+                if uop.inst.is_store() { warp.store_done = done } else { warp.load_done = warp.load_done.max(done) }
+                done
             } else {
                 now + latency
             };

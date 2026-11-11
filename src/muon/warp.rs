@@ -31,6 +31,8 @@ pub struct Warp {
     pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
     pub fetch_ready: u64,        // first cycle the ibuf may refill after a redirect
     pub gmem_lines: VecDeque<Vec<u64>>, // per decoded, unissued global memory op: the lines it touches
+    pub store_done: u64,         // cycle its last issued global store completes
+    pub load_done: u64,          // cycle the last of its issued global loads completes
     pub regs: usize,             // regs per thread allocated to this slot
     logger: Arc<Logger>,
 }
@@ -43,6 +45,7 @@ impl ModuleBehaviors for Warp {
         self.reg_ready.fill(0);
         self.fetch_ready = 0;
         self.gmem_lines.clear();
+        (self.store_done, self.load_done) = (0, 0);
     }
 }
 
@@ -143,6 +146,8 @@ impl Warp {
             reg_ready: vec![0; config.num_regs],
             fetch_ready: 0,
             gmem_lines: VecDeque::new(),
+            store_done: 0,
+            load_done: 0,
             regs: 0,
             logger: logger.clone(),
         };

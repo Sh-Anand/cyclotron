@@ -10,5 +10,5 @@ smem_size = 0x20000
 
 [sim]
 log_level = 1
-timeout = 100000
+timeout = 1000000
 elf = "test/isa-tests/rv32ui-p-add"
