@@ -195,8 +195,6 @@ impl MuonCore {
                 if uop.inst.is_barrier() {
                     self.warps[wid].fetch_ready = u64::MAX;
                     self.arrived = Some(self.warps[wid].cta());
-                } else if self.scheduler.pc(wid) != uop.inst.pc + 8 {
-                    self.warps[wid].fetch_ready = now + self.conf().redirect_latency; // redirect
                 }
             }
             let unit = uop.inst.unit();

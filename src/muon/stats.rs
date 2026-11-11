@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 pub struct CoreStats {
     pub unit_issued: [u64; Unit::ALL.len()],
     pub stall_deps: u64,  // entries in some window, none ready (window hazards or scoreboard)
-    pub stall_fetch: u64, // windows empty, waiting on a redirect
+    pub stall_fetch: u64, // windows empty, waiting on fetch
     pub stall_barrier: u64, // windows empty, some warp waiting at a barrier
     pub gmem_instrs: u64,
     pub gmem_reqs: u64, // lines presented to the L0; more than one per instruction is uncoalesced
