@@ -1,3 +1,4 @@
+use crate::muon::cache::{self, Cache};
 use crate::muon::config::MuonConfig;
 use crate::muon::core::{CtaId, MuonCore};
 use crate::muon::warp::ExecErr;
@@ -18,10 +19,13 @@ pub struct SM {
 }
 
 impl SM {
-    pub fn new(id: usize, config: MuonConfig, logger: &Arc<Logger>) -> Self {
+    /// `caches` holds every global memory cache; this adds the SM's L1 below `l2` and an L0 per core
+    pub fn new(id: usize, config: MuonConfig, logger: &Arc<Logger>, caches: &mut Vec<Cache>, l2: usize) -> Self {
+        let l1 = cache::add(caches, config.gmem.l1, Some(l2));
+        let l0 = |caches: &mut Vec<Cache>| cache::add(caches, config.gmem.l0, Some(l1));
         SM {
             config,
-            cores: (0..config.num_cores).map(|i| MuonCore::new(Arc::new(config), id, i, logger)).collect(),
+            cores: (0..config.num_cores).map(|i| MuonCore::new(Arc::new(config), id, i, logger, l0(caches))).collect(),
             smem: FlatMemory::new_with_size(config.smem_size, None),
             smem_free: 0,
             errs: vec![None; config.num_cores],
@@ -89,11 +93,11 @@ impl SM {
         self.cores.iter().zip(&self.errs).any(|(core, err)| err.is_none() && core.scheduler.active_warp_mask() != 0)
     }
 
-    pub fn tick(&mut self, now: u64, gmem: &mut FlatMemory) {
+    pub fn tick(&mut self, now: u64, gmem: &mut FlatMemory, caches: &mut [Cache]) {
         // cores with running warps; a core that errored stops until its CTAs are freed
         for (core, err) in self.cores.iter_mut().zip(self.errs.iter_mut()) {
             if err.is_none() && core.scheduler.active_warp_mask() != 0 {
-                if let Err(e) = core.process(now, &mut self.smem, &mut self.smem_free, gmem) {
+                if let Err(e) = core.process(now, &mut self.smem, &mut self.smem_free, gmem, caches) {
                     *err = Some(e);
                 }
             }

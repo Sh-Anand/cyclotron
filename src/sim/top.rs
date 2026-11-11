@@ -1,4 +1,5 @@
 use crate::base::behavior::*;
+use crate::muon::cache::{self, Cache};
 use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
 use crate::muon::sm::SM;
@@ -129,6 +130,7 @@ pub struct CyclotronTop {
     pub sm: SM,
     pub timeout: u64,
     pub gmem: FlatMemory,
+    caches: Vec<Cache>, // global memory caches: the L2, then the SM's L1 and L0s
 }
 
 impl CyclotronTop {
@@ -144,12 +146,15 @@ impl CyclotronTop {
         let mut gmem = FlatMemory::new(Some(config.mem_config));
         gmem.copy_elf(&imem);
 
+        let mut caches = vec![];
+        let l2 = cache::add(&mut caches, config.muon_config.gmem.l2, None);
         CyclotronTop {
             scheduled: false,
             cycle: 0,
-            sm: SM::new(0, config.muon_config, logger),
+            sm: SM::new(0, config.muon_config, logger, &mut caches, l2),
             timeout: config.timeout,
             gmem,
+            caches,
         }
     }
 
@@ -170,7 +175,7 @@ impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
         self.schedule();
         self.cycle += 1;
-        self.sm.tick(self.cycle, &mut self.gmem);
+        self.sm.tick(self.cycle, &mut self.gmem, &mut self.caches);
         if let Some(err) = self.sm.errs.iter().find_map(Option::as_ref) {
             panic!("{err:?}");
         }

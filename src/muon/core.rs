@@ -1,4 +1,5 @@
 use crate::base::{behavior::*, module::*};
+use crate::muon::cache::Cache;
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig, Unit};
 use crate::muon::decode::{DecodedInst, MicroOp};
@@ -30,6 +31,7 @@ pub struct MuonCore {
     pub trace: bool,
     pub stats: CoreStats, // accumulates across CTAs; not cleared by reset
     pub arrived: Option<CtaId>, // CTA of a warp that just issued a barrier
+    pub l0: usize, // this core's global memory cache
 }
 
 impl MuonCore {
@@ -38,6 +40,7 @@ impl MuonCore {
         cluster_id: usize,
         core_id: usize,
         logger: &Arc<Logger>,
+        l0: usize,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
@@ -65,6 +68,7 @@ impl MuonCore {
             trace: false,
             stats: CoreStats::default(),
             arrived: None,
+            l0,
         };
 
         info!(
@@ -162,7 +166,14 @@ impl MuonCore {
     }
 
     /// Advance the core by one cycle, cycle `now` of the one global clock: issue one instruction from one warp.
-    pub fn process(&mut self, now: u64, smem: &mut FlatMemory, smem_free: &mut u64, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
+    pub fn process(
+        &mut self,
+        now: u64,
+        smem: &mut FlatMemory,
+        smem_free: &mut u64,
+        gmem: &mut FlatMemory,
+        _caches: &mut [Cache],
+    ) -> Result<(), ExecErr> {
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
             self.refill(w, now, smem, gmem)?;
