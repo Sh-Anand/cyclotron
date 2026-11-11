@@ -30,6 +30,7 @@ pub struct Warp {
     pub ibuf: VecDeque<MicroOp>, // decoded, not yet issued; all but a trailing control op already executed
     pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
     pub fetch_ready: u64,        // first cycle the ibuf may refill after a redirect
+    pub gmem_lines: VecDeque<Vec<u64>>, // per decoded, unissued global memory op: the lines it touches
     pub regs: usize,             // regs per thread allocated to this slot
     logger: Arc<Logger>,
 }
@@ -41,6 +42,7 @@ impl ModuleBehaviors for Warp {
         self.ibuf.clear();
         self.reg_ready.fill(0);
         self.fetch_ready = 0;
+        self.gmem_lines.clear();
     }
 }
 
@@ -140,6 +142,7 @@ impl Warp {
             ibuf: VecDeque::new(),
             reg_ready: vec![0; config.num_regs],
             fetch_ready: 0,
+            gmem_lines: VecDeque::new(),
             regs: 0,
             logger: logger.clone(),
         };

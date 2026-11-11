@@ -1,5 +1,5 @@
 use crate::base::{behavior::*, module::*};
-use crate::muon::cache::Cache;
+use crate::muon::cache::{self, Cache};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig, Unit};
 use crate::muon::decode::{DecodedInst, MicroOp};
@@ -32,6 +32,7 @@ pub struct MuonCore {
     pub stats: CoreStats, // accumulates across CTAs; not cleared by reset
     pub arrived: Option<CtaId>, // CTA of a warp that just issued a barrier
     pub l0: usize, // this core's global memory cache
+    gmem_free: u64, // first cycle the L0 can take the next global memory op
 }
 
 impl MuonCore {
@@ -69,6 +70,7 @@ impl MuonCore {
             stats: CoreStats::default(),
             arrived: None,
             l0,
+            gmem_free: 0,
         };
 
         info!(
@@ -148,7 +150,8 @@ impl MuonCore {
             (i == 0 || !u.is_control()) // control issues last
                 && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
                 && u.rs().chain(rd).all(|r| warp.reg_ready[r] <= now) // scoreboard: RAW, WAW
-                && (warp.ibuf[i].smem == 0 || smem_free <= now) // shared memory serves one request at a time
+                // one memory op at a time: per SM for shared memory, per core for global memory
+                && (!mem || if warp.ibuf[i].smem > 0 { smem_free } else { self.gmem_free } <= now)
         })
     }
 
@@ -172,7 +175,7 @@ impl MuonCore {
         smem: &mut FlatMemory,
         smem_free: &mut u64,
         gmem: &mut FlatMemory,
-        _caches: &mut [Cache],
+        caches: &mut [Cache],
     ) -> Result<(), ExecErr> {
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
@@ -192,11 +195,21 @@ impl MuonCore {
                 }
             }
             let unit = uop.inst.unit();
+            let latency = self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
             let done = if uop.smem > 0 {
                 *smem_free = now + uop.smem as u64 * self.conf().smem.per_bank_latency;
                 *smem_free + self.conf().smem.startup_latency
+            } else if unit == Unit::Lsu {
+                // global memory: present each line to the L0 a cycle after it accepted the previous one
+                let (mut t, mut ready) = (now, now);
+                for line in self.warps[wid].gmem_lines.pop_front().unwrap() {
+                    let (accepted, data) = cache::access(caches, self.l0, line, t, uop.inst.rd().is_none());
+                    (t, ready) = (accepted + 1, ready.max(data));
+                }
+                self.gmem_free = t;
+                ready + latency
             } else {
-                now + self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency
+                now + latency
             };
             if let Some(rd) = uop.inst.rd() {
                 self.warps[wid].reg_ready[rd] = done;
@@ -223,7 +236,16 @@ impl MuonCore {
             mem_lines.iter().filter(|l| l.is_smem).map(|l| (l.address as usize / 4 % banks, l.address / 4)).collect();
         words.sort_unstable();
         words.dedup(); // lanes on the same word count once
-        Ok(words.chunk_by(|a, b| a.0 == b.0).map(<[_]>::len).max().unwrap_or(0) as u8)
+        let smem = words.chunk_by(|a, b| a.0 == b.0).map(<[_]>::len).max().unwrap_or(0) as u8;
+        if uop.inst.unit() == Unit::Lsu && smem == 0 {
+            let line = self.conf().gmem.line as u32;
+            let mut lines: Vec<_> = // the lines each lane's first and last byte fall in
+                mem_lines.iter().flat_map(|l| [l.address / line, (l.address + l.size - 1) / line]).map(u64::from).collect();
+            lines.sort_unstable();
+            lines.dedup();
+            self.warps[wid].gmem_lines.push_back(lines);
+        }
+        Ok(smem)
     }
 
     pub fn get_tracer_mut(&mut self) -> &mut Tracer {
