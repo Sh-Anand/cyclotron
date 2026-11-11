@@ -15,6 +15,7 @@ pub struct MuonConfig {
     pub redirect_latency: u64, // issue of a pc-changing control op to the first issue at its target
     pub units: UnitsConfig,
     pub smem: SmemConfig,
+    pub gmem: GmemConfig,
     #[serde(skip)]
     pub lane_config: LaneConfig,
 }
@@ -35,6 +36,7 @@ impl Default for MuonConfig {
             redirect_latency: 1,
             units: UnitsConfig::default(),
             smem: SmemConfig::default(),
+            gmem: GmemConfig::default(),
             lane_config: LaneConfig::default(),
         }
     }
@@ -51,6 +53,36 @@ pub struct SmemConfig {
 impl Default for SmemConfig {
     fn default() -> Self {
         Self { banks: 32, startup_latency: 8, per_bank_latency: 1 }
+    }
+}
+
+/// One cache level of global memory
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct CacheConfig {
+    pub sets: usize,
+    pub ways: usize,
+    pub line: usize, // bytes
+    pub mshrs: usize,
+    pub hit_latency: u64,
+    pub miss_latency: u64, // on top of the next level's access; the last level's includes DRAM
+    pub bus_cycles: u64,   // cycles a miss holds the link to the next level
+}
+
+/// Global memory: L0 per core, L1 per SM, L2 shared by all SMs and backed by DRAM
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(default)]
+pub struct GmemConfig {
+    pub l0: CacheConfig,
+    pub l1: CacheConfig,
+    pub l2: CacheConfig,
+}
+
+impl Default for GmemConfig {
+    fn default() -> Self {
+        let c = |sets, ways, line, mshrs, hit_latency, miss_latency, bus_cycles| CacheConfig {
+            sets, ways, line, mshrs, hit_latency, miss_latency, bus_cycles,
+        };
+        Self { l0: c(64, 1, 128, 4, 2, 9, 0), l1: c(512, 4, 32, 8, 2, 9, 0), l2: c(2048, 8, 32, 8, 6, 40, 4) }
     }
 }
 
@@ -100,7 +132,7 @@ impl Default for UnitsConfig {
             fp_divsqrt: u(4, 16),  // CVFPU PULP divsqrt, 3 iteration units: ~9 iterations + pre/post + 2 pipe regs
             fp_exp: u(8, 9),       // FPEX: 6 stages + recomposer
             sfu: u(32, 3),
-            lsu: u(32, 4),         // placeholder until the memory hierarchy is modelled
+            lsu: u(32, 10),        // LSU queues, coalescer and writeback; the caches add the rest
         }
     }
 }
