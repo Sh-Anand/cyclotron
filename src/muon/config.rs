@@ -61,7 +61,6 @@ impl Default for SmemConfig {
 pub struct CacheConfig {
     pub sets: usize,
     pub ways: usize,
-    pub line: usize, // bytes
     pub mshrs: usize,
     pub hit_latency: u64,
     pub miss_latency: u64, // on top of the next level's access; the last level's includes DRAM
@@ -72,6 +71,7 @@ pub struct CacheConfig {
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(default)]
 pub struct GmemConfig {
+    pub line: usize, // bytes, the same at every level
     pub l0: CacheConfig,
     pub l1: CacheConfig,
     pub l2: CacheConfig,
@@ -79,10 +79,10 @@ pub struct GmemConfig {
 
 impl Default for GmemConfig {
     fn default() -> Self {
-        let c = |sets, ways, line, mshrs, hit_latency, miss_latency, bus_cycles| CacheConfig {
-            sets, ways, line, mshrs, hit_latency, miss_latency, bus_cycles,
+        let c = |sets, ways, mshrs, hit_latency, miss_latency, bus_cycles| CacheConfig {
+            sets, ways, mshrs, hit_latency, miss_latency, bus_cycles,
         };
-        Self { l0: c(64, 1, 128, 4, 2, 9, 0), l1: c(512, 4, 32, 8, 2, 9, 0), l2: c(2048, 8, 32, 8, 6, 40, 4) }
+        Self { line: 128, l0: c(64, 1, 4, 2, 9, 0), l1: c(128, 4, 8, 2, 9, 0), l2: c(512, 8, 8, 6, 40, 16) }
     }
 }
 
