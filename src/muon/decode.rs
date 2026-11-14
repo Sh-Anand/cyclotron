@@ -1,5 +1,3 @@
-extern crate num;
-
 use crate::muon::config::Unit;
 use crate::muon::execute::Opcode;
 use crate::utils::*;

@@ -35,12 +35,6 @@ impl Logger {
         Logger { level }
     }
 
-    pub fn silent() -> Self {
-        Logger {
-            level: LogLevel::NONE,
-        }
-    }
-
     pub fn enabled(&self, level: &LogLevel) -> bool {
         *level <= self.level
     }

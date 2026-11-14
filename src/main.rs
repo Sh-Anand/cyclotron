@@ -1,5 +1,3 @@
-extern crate lazy_static;
-
 use clap::Parser;
 use cyclotron::ui::*;
 

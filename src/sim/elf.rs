@@ -1,32 +1,9 @@
-use crate::base::mem::HasMemory;
-use anyhow::anyhow;
 use goblin::elf::{section_header, Elf};
 use std::path::Path;
 use std::{collections::HashMap, fs};
 
 pub struct ElfBackedMem {
     pub sections: HashMap<(usize, usize), Vec<u8>>,
-}
-
-impl HasMemory for ElfBackedMem {
-    fn read_impl(&self, addr: usize, n: usize) -> Result<&[u8], anyhow::Error> {
-        for section in &self.sections {
-            let range = section.0;
-            let data = section.1;
-
-            if addr >= range.0 && addr + n <= range.1 {
-                let start = addr - range.0;
-                let end = start + n;
-                return Ok(&data[start..end]);
-            }
-        }
-
-        Err(anyhow!("address not present in any section"))
-    }
-
-    fn write_impl(&mut self, _addr: usize, _data: &[u8]) -> Result<(), anyhow::Error> {
-        Err(anyhow!("elf backed memory cannot be written to"))
-    }
 }
 
 impl ElfBackedMem {

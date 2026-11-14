@@ -43,7 +43,4 @@ pub trait HasMemory {
 
         self.write_impl(addr, data)
     }
-    fn write_n<const N: usize>(&mut self, addr: usize, data: [u8; N]) -> Result<(), anyhow::Error> {
-        self.write(addr, data.as_slice())
-    }
 }

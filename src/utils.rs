@@ -1,6 +1,3 @@
-#![allow(unused)]
-#![allow(unused_macros)]
-
 use num_traits::{PrimInt, Unsigned};
 
 pub trait BitSlice {
@@ -47,7 +44,6 @@ impl<T: PrimInt + Unsigned + TryFrom<u64>> BitSlice for T {
 
 pub trait BitMask {
     fn to_u32(&self) -> u32;
-    fn bitwise_or(&mut self, other: &Self);
 }
 
 impl BitMask for [bool] {
@@ -61,76 +57,10 @@ impl BitMask for [bool] {
 
         mask_int
     }
-
-    fn bitwise_or(&mut self, other: &Self) {
-        assert_eq!(self.len(), other.len(), "Bitmasks must be of equal length");
-        for (x, y) in self.iter_mut().zip(other.iter()) {
-            *x = *x || *y;
-        }
-    }
 }
 
 impl BitMask for Vec<bool> {
     fn to_u32(&self) -> u32 {
         self.as_slice().to_u32()
     }
-
-    fn bitwise_or(&mut self, other: &Self) {
-        assert_eq!(self.len(), other.len(), "Vectors must be of equal length");
-        for (x, y) in self.iter_mut().zip(other.iter()) {
-            *x = *x || *y;
-        }
-    }
 }
-
-macro_rules! parse_val {
-    ($value:expr) => {
-        $value
-            .parse()
-            .map_err(|_| format!("parse config value {} failed", $value))
-    };
-}
-pub(crate) use parse_val;
-
-macro_rules! for2d {
-    ($matrix:expr, $closure:expr) => {
-        for (i, row) in $matrix.iter().enumerate() {
-            for (j, item) in row.iter().enumerate() {
-                $closure(i as u32, j as u32, item);
-            }
-        }
-    };
-}
-pub(crate) use for2d;
-
-macro_rules! map2d {
-    ($matrix:expr, $closure:expr) => {
-        $matrix
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                row.iter()
-                    .enumerate()
-                    .map(|(j, item)| $closure(i, j as u32, item))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    };
-}
-pub(crate) use map2d;
-
-macro_rules! zip2d {
-    ($matrix0:expr, matrix1:expr) => {
-        $matrix0.iter().zip(matrix1).map(|(a, b)| a.iter().zip(b))
-    };
-}
-pub(crate) use zip2d;
-
-macro_rules! fill {
-    ($value:expr, $n:expr) => {
-        std::iter::repeat_with(|| $value)
-            .take($n)
-            .collect::<Vec<_>>()
-    };
-}
-pub(crate) use fill;
