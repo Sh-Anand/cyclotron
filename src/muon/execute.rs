@@ -1,7 +1,7 @@
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
+use crate::muon::decode::{sign_ext, IssuedInst, Lanes, MicroOp, RegFile};
 use crate::muon::scheduler::Scheduler;
-use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
+use crate::muon::warp::{MemRequest, MemResponse};
 use crate::utils::BitSlice;
 use half::bf16;
 use num_derive::FromPrimitive;
@@ -500,7 +500,7 @@ impl ExecuteUnit {
         num_lanes: usize,
         csrf: &mut CSRFile,
         active_warps: u32,
-    ) -> Vec<Option<u32>> {
+    ) -> Lanes<u32> {
         let csr_type = match issued_inst.f3 {
             1 => CSRType::RW,  // csrrw
             2 => CSRType::RS,  // csrrs
@@ -520,9 +520,8 @@ impl ExecuteUnit {
         if [0xcc3, 0xcc4].contains(&addr) && !csrr {
             panic!("unimplemented thread mask write using csr");
         }
-        let rds = (0..num_lanes)
-            .map(|lane| tmask.bit(lane).then(|| csrf.read(addr, lane, tmask, active_warps)))
-            .collect();
+        let rds =
+            std::array::from_fn(|lane| (lane < num_lanes && tmask.bit(lane)).then(|| csrf.read(addr, lane, tmask, active_warps)));
         let old = csrf.read(addr, first_lid, tmask, active_warps);
         csrf.write(addr, match csr_type {
             CSRType::RW | CSRType::RWI => operand,
@@ -590,21 +589,15 @@ impl ExecuteUnit {
         let decoded = ibuf.inst;
         let tmask = ibuf.tmask;
 
-        let collect_source_reg = |rs_addr| {
-            rf.iter()
-                .enumerate()
-                .map(|(lane, lrf)| match tmask.bit(lane) {
-                    true => Some(lrf.read_gpr(rs_addr)),
-                    false => None,
-                })
-                .collect::<Vec<_>>()
+        let collect_source_reg = |rs_addr| -> Lanes<u32> {
+            std::array::from_fn(|lane| rf.get(lane).filter(|_| tmask.bit(lane)).map(|lrf| lrf.read_gpr(rs_addr)))
         };
         let rs1_data = collect_source_reg(decoded.rs1_addr);
         let rs2_data = collect_source_reg(decoded.rs2_addr);
-        // only fused multiply-adds read rs3 (nothing reads rs4); empty vecs don't allocate
+        // only fused multiply-adds read rs3 (nothing reads rs4)
         let has = decoded.has_regs();
-        let rs3_data = if has.rs3 { collect_source_reg(decoded.rs3_addr) } else { Vec::new() };
-        let rs4_data = if has.rs4 { collect_source_reg(decoded.rs4_addr) } else { Vec::new() };
+        let rs3_data = if has.rs3 { collect_source_reg(decoded.rs3_addr) } else { [None; 32] };
+        let rs4_data = if has.rs4 { collect_source_reg(decoded.rs4_addr) } else { [None; 32] };
 
         IssuedInst {
             opcode: decoded.opcode,
@@ -629,37 +622,31 @@ impl ExecuteUnit {
     }
 
     #[inline]
-    fn collect_lanes<F, T>(mut func: F, tmask: u32, rf: &mut [RegFile]) -> Vec<Option<T>>
+    fn collect_lanes<F, T>(mut func: F, tmask: u32, rf: &mut [RegFile]) -> Lanes<T>
     where
         F: FnMut(usize) -> Option<T>,
     {
-        rf.iter_mut()
-            .enumerate()
-            .map(|(lane, _)| match tmask.bit(lane) {
-                true => func(lane),
-                false => None,
-            })
-            .collect()
+        std::array::from_fn(|lane| if lane < rf.len() && tmask.bit(lane) { func(lane) } else { None })
     }
 
+    /// Execute one instruction: its rd data per lane, and its memory requests still to serve.
     pub fn execute(
-        issued: IssuedInst,
+        issued: &IssuedInst,
         wid: usize,
         tmask: u32,
         rf: &mut [RegFile],
         csrf: &mut CSRFile,
         scheduler: &mut Scheduler,
-    ) -> ExWriteback {
+    ) -> (Lanes<u32>, Lanes<MemRequest>) {
         let num_lanes = rf.len();
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
 
-        let empty = vec![None::<u32>; num_lanes];
-        // no mem requests is an empty vec, which Warp::mem passes straight through
-        let empty_mem = Vec::<Option<MemRequest>>::new();
+        let empty = [None::<u32>; 32];
+        let empty_mem = [None::<MemRequest>; 32];
 
-        let (rd_wb, mem_req) = match issued.opcode {
+        match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => (
                 Self::collect_lanes(ExecuteUnit::alu(&issued), tmask, rf),
                 empty_mem,
@@ -736,9 +723,7 @@ impl ExecuteUnit {
             _ => {
                 panic!("unimplemented opcode 0x{:x}", issued.opcode);
             }
-        };
-
-        ExWriteback { rd_addr: issued.rd_addr, rd_data: rd_wb, mem_req }
+        }
     }
 
     /// Generate rd writeback for the memory load responses handled after EX & came back from

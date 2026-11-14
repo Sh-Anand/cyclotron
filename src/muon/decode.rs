@@ -29,6 +29,9 @@ pub struct DecodedInst {
     pub raw: u64,
 }
 
+/// one value per lane; a warp has at most 32
+pub type Lanes<T> = [Option<T>; 32];
+
 /// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
 #[derive(Debug, Clone)]
 pub struct IssuedInst {
@@ -40,10 +43,10 @@ pub struct IssuedInst {
     pub rs2_addr: u8,
     pub rs3_addr: u8,
     pub rs4_addr: u8,
-    pub rs1_data: Vec<Option<u32>>,
-    pub rs2_data: Vec<Option<u32>>,
-    pub rs3_data: Vec<Option<u32>>,
-    pub rs4_data: Vec<Option<u32>>,
+    pub rs1_data: Lanes<u32>,
+    pub rs2_data: Lanes<u32>,
+    pub rs3_data: Lanes<u32>,
+    pub rs4_data: Lanes<u32>,
     pub f7: u8,
     pub imm32: u32,
     pub imm24: i32,
@@ -223,6 +226,7 @@ pub struct MicroOp {
     pub inst: DecodedInst,
     pub tmask: u32,
     pub smem: u8, // shared memory request: distinct words in its fullest bank; 0 if not one
+    pub gmem: u8, // global memory request: its lines waiting in `Warp::gmem_lines`
 }
 
 impl std::fmt::Display for DecodedInst {

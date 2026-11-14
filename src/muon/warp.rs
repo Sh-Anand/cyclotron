@@ -1,9 +1,9 @@
 use crate::base::mem::HasMemory;
 use crate::info;
-use crate::muon::config::MuonConfig;
+use crate::muon::config::{MuonConfig, Unit};
 use crate::muon::core::CtaId;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, MicroOp, RegFile};
+use crate::muon::decode::{DecodeUnit, Lanes, MicroOp, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::flat_mem::FlatMemory;
@@ -23,7 +23,7 @@ pub struct Warp {
     pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
     pub fetch_ready: u64,        // first cycle the ibuf may refill; u64::MAX while waiting at a barrier
     pub fetched: u64,            // the instruction cache line it last fetched
-    pub gmem_lines: VecDeque<Vec<u64>>, // per decoded, unissued global memory op: the lines it touches
+    pub gmem_lines: VecDeque<u64>, // the lines its decoded, unissued global memory ops touch, oldest op first
     pub store_done: u64,         // cycle its last issued global store completes
     pub load_done: u64,          // cycle the last of its issued global loads completes
     pub regs: usize,             // regs per thread allocated to this slot
@@ -42,15 +42,7 @@ impl Warp {
     }
 }
 
-/// What the execute stage produced: rd data per lane, and the memory requests still to serve.
-#[derive(Debug)]
-pub struct ExWriteback {
-    pub rd_addr: u8,
-    pub rd_data: Vec<Option<u32>>,
-    pub mem_req: Vec<Option<MemRequest>>,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct MemRequest {
     pub addr: u32,
     pub data: Option<u32>,
@@ -60,14 +52,6 @@ pub struct MemRequest {
     pub is_smem: bool,
     pub is_amo: bool,
     pub amo_op: u8,
-}
-
-/// one lane's access to shared or global memory
-#[derive(Clone, Debug)]
-pub struct MemAccess {
-    pub is_smem: bool,
-    pub address: u32,
-    pub size: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -107,61 +91,64 @@ impl Warp {
         let inst = u64::from_le_bytes(gmem.read_n::<8>(schedule.pc as usize).expect("failed to fetch instruction"));
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
-        MicroOp { inst, tmask: schedule.mask, smem: 0 }
+        MicroOp { inst, tmask: schedule.mask, smem: 0, gmem: 0 }
     }
 
     /// Execute `uop` functionally: read its operands, execute it, serve its memory requests and
-    /// write rd.  Returns the memory its lanes accessed.
+    /// write rd.  Returns its `MicroOp::smem` and `MicroOp::gmem` counts.
     pub fn backend(
         &mut self,
         uop: MicroOp,
         scheduler: &mut Scheduler,
         smem: &mut FlatMemory,
         gmem: &mut FlatMemory,
-    ) -> Result<Vec<MemAccess>, ExecErr> {
-        let (pc, tmask, wid) = (uop.inst.pc, uop.tmask, self.wid);
+    ) -> Result<(u8, u8), ExecErr> {
+        let (pc, tmask, wid, rd_addr) = (uop.inst.pc, uop.tmask, self.wid, uop.inst.rd_addr);
         assert!(scheduler.state.thread_masks[wid] == tmask, "scheduler tmask was not set correctly");
 
-        let core_id = self.conf.lane_config.core_id;
-        let issued = ExecuteUnit::collect(&uop, &self.reg_file);
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            let ex = ExecuteUnit::execute(issued, wid, tmask, &mut self.reg_file, &mut self.csr_file, scheduler);
-            Self::mem(ex, smem, gmem)
-        }));
-
-        match result {
-            Ok((rd_addr, rd_data, accesses)) => {
-                for (lrf, ldata) in zip(&mut self.reg_file, rd_data) {
-                    ldata.map(|data| lrf.write_gpr(rd_addr, data));
-                }
-                info!(self.logger, "[core {} warp {}] PC=0x{:08x}, rd={:3}", core_id, wid, pc, rd_addr);
-                Ok(accesses)
+        catch_unwind(AssertUnwindSafe(|| {
+            let issued = ExecuteUnit::collect(&uop, &self.reg_file);
+            let (mut rd_data, reqs) =
+                ExecuteUnit::execute(&issued, wid, tmask, &mut self.reg_file, &mut self.csr_file, scheduler);
+            let counts = if uop.inst.unit() == Unit::Lsu { self.mem(&mut rd_data, &reqs, smem, gmem) } else { (0, 0) };
+            for (lrf, ldata) in zip(&mut self.reg_file, rd_data) {
+                ldata.map(|data| lrf.write_gpr(rd_addr, data));
             }
-            Err(payload) => Err(ExecErr { pc, warp_id: wid, message: payload.downcast::<String>().ok().map(|s| *s) }),
-        }
+            info!(self.logger, "[core {} warp {}] PC=0x{:08x}, rd={:3}", self.conf.lane_config.core_id, wid, pc, rd_addr);
+            counts
+        }))
+        .map_err(|payload| ExecErr { pc, warp_id: wid, message: payload.downcast::<String>().ok().map(|s| *s) })
     }
 
-    /// Serve the memory requests of an executed instruction: its rd address, its rd data merged
-    /// with what it loaded, and the memory its lanes accessed.
-    fn mem(ex: ExWriteback, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> (u8, Vec<Option<u32>>, Vec<MemAccess>) {
-        // most instructions touch no memory
-        if ex.mem_req.iter().all(Option::is_none) {
-            return (ex.rd_addr, ex.rd_data, vec![]);
+    /// Serve an instruction's memory requests; what a lane loads is its rd data.  Returns the distinct
+    /// words in its fullest shared memory bank, and how many distinct global lines it queued.
+    fn mem(&mut self, rd_data: &mut Lanes<u32>, reqs: &Lanes<MemRequest>, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> (u8, u8) {
+        let (banks, line) = (self.conf.smem.banks, self.conf.gmem.line as u32);
+        // (bank, word) of each shared memory access; the lines each global access's first and last byte fall in
+        let (mut words, mut lines, mut nw, mut nl) = ([(0, 0); 32], [0u64; 64], 0, 0);
+        for (rd, r) in zip(rd_data, reqs) {
+            let Some(r) = r else { continue };
+            assert!(rd.is_none(), "mem req generated for a lane that already has an EX rd writeback");
+            *rd = ExecuteUnit::mem_writeback(r, &Self::mem_response(r, smem, gmem));
+            if r.is_smem {
+                words[nw] = (r.addr as usize / 4 % banks, r.addr / 4);
+                nw += 1;
+            } else {
+                (lines[nl], lines[nl + 1]) = ((r.addr / line) as u64, ((r.addr + r.size - 1) / line) as u64);
+                nl += 2;
+            }
         }
-        let (mut accesses, mut rd_mem) = (vec![], vec![]);
-        for req in &ex.mem_req {
-            rd_mem.push(req.as_ref().and_then(|req| {
-                accesses.push(MemAccess { is_smem: req.is_smem, address: req.addr, size: req.size });
-                ExecuteUnit::mem_writeback(req, &Self::mem_response(req, smem, gmem))
-            }));
+        words[..nw].sort_unstable();
+        lines[..nl].sort_unstable();
+        // lanes on the same word, or on the same line, count once
+        let distinct = |bank: &[(usize, u32)]| 1 + bank.windows(2).filter(|w| w[0] != w[1]).count();
+        let smem = words[..nw].chunk_by(|a, b| a.0 == b.0).map(distinct).max().unwrap_or(0) as u8;
+        let mut gmem = 0;
+        for i in (0..nl).filter(|&i| smem == 0 && (i == 0 || lines[i] != lines[i - 1])) {
+            self.gmem_lines.push_back(lines[i]);
+            gmem += 1;
         }
-        let rd_data = zip(ex.rd_data, rd_mem)
-            .map(|(lrd_ex, lrd_mem)| {
-                assert!(lrd_mem.is_none() || lrd_ex.is_none(), "mem req generated for a lane that already has an EX rd writeback");
-                lrd_mem.or(lrd_ex)
-            })
-            .collect();
-        (ex.rd_addr, rd_data, accesses)
+        (smem, gmem)
     }
 
     /// Handle a per-lane memory request and generate a MemResponse.

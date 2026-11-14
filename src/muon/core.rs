@@ -176,7 +176,9 @@ impl MuonCore {
                 }
             }
             let mut uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap(), gmem);
-            uop.smem = if uop.inst.is_control() { 0 } else { self.exec(wid, uop, smem, gmem)? };
+            if !uop.inst.is_control() {
+                (uop.smem, uop.gmem) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
+            }
             self.warps[wid].ibuf.push_back(uop);
         }
         Ok(())
@@ -214,7 +216,7 @@ impl MuonCore {
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.inst.unit() as usize] += 1;
             if uop.inst.is_control() {
-                self.exec(wid, uop, smem, gmem)?;
+                self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
                 if uop.inst.is_barrier() {
                     self.warps[wid].fetch_ready = u64::MAX;
                     self.arrived = Some(self.warps[wid].cta());
@@ -230,10 +232,10 @@ impl MuonCore {
             } else if unit == Unit::Lsu {
                 // global memory: present each line to the L1 a cycle after it accepted the previous one
                 let (mut t, mut ready) = (now, now);
-                let lines = self.warps[wid].gmem_lines.pop_front().unwrap();
                 self.stats.gmem_instrs += 1;
-                self.stats.gmem_reqs += lines.len() as u64;
-                for line in lines {
+                self.stats.gmem_reqs += uop.gmem as u64;
+                for _ in 0..uop.gmem {
+                    let line = self.warps[wid].gmem_lines.pop_front().unwrap();
                     let (accepted, data) = cache::access(caches, self.l1, line, t, uop.inst.is_store());
                     (t, ready) = (accepted + 1, ready.max(data));
                 }
@@ -255,26 +257,6 @@ impl MuonCore {
             self.stats.stall_fetch += 1;
         }
         Ok(())
-    }
-
-    /// Execute one instruction functionally; returns its `MicroOp::smem` count.
-    fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<u8, ExecErr> {
-        let mem_lines = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
-        let banks = self.conf.smem.banks;
-        let mut words: Vec<_> = // (bank, word) of each shared memory access
-            mem_lines.iter().filter(|l| l.is_smem).map(|l| (l.address as usize / 4 % banks, l.address / 4)).collect();
-        words.sort_unstable();
-        words.dedup(); // lanes on the same word count once
-        let smem = words.chunk_by(|a, b| a.0 == b.0).map(<[_]>::len).max().unwrap_or(0) as u8;
-        if uop.inst.unit() == Unit::Lsu && smem == 0 {
-            let line = self.conf.gmem.line as u32;
-            let mut lines: Vec<_> = // the lines each lane's first and last byte fall in
-                mem_lines.iter().flat_map(|l| [l.address / line, (l.address + l.size - 1) / line]).map(u64::from).collect();
-            lines.sort_unstable();
-            lines.dedup();
-            self.warps[wid].gmem_lines.push_back(lines);
-        }
-        Ok(smem)
     }
 
 }
