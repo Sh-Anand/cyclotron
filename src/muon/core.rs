@@ -1,7 +1,7 @@
 use crate::muon::cache::{self, Cache};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig, Unit};
-use crate::muon::decode::{DecodedInst, MicroOp};
+use crate::muon::decode::MicroOp;
 use crate::muon::scheduler::Scheduler;
 use crate::muon::stats::CoreStats;
 use crate::muon::warp::{ExecErr, Warp};
@@ -120,16 +120,15 @@ impl MuonCore {
 
     /// the cycle entry `e` of `warp` has its registers and memory ready, ignoring older entries
     fn ready_at(warp: &Warp, e: &MicroOp, smem_free: u64, gmem_free: u64) -> u64 {
-        let u = &e.inst;
-        let regs = u.rs().chain(u.rd()).map(|r| warp.reg_ready[r]).max().unwrap_or(0); // scoreboard: RAW, WAW
+        let regs = e.rs.iter().chain(&e.rd).map(|&r| warp.reg_ready[r]).max().unwrap_or(0); // scoreboard: RAW, WAW
         // one memory op at a time per SM, for shared memory and for global memory.  A global op also
         // waits for the warp's older stores, and a store for its older loads
-        let mem = if u.unit() != Unit::Lsu {
+        let mem = if e.unit != Unit::Lsu {
             0
         } else if e.smem > 0 {
             smem_free
         } else {
-            gmem_free.max(warp.store_done).max(if u.is_store() { warp.load_done } else { 0 })
+            gmem_free.max(warp.store_done).max(if e.inst.is_store() { warp.load_done } else { 0 })
         };
         regs.max(mem)
     }
@@ -138,16 +137,15 @@ impl MuonCore {
     fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64) -> Option<usize> {
         let warp = &self.warps[w];
         (0..warp.ibuf.len()).find(|&i| {
-            let u = &warp.ibuf[i].inst;
-            let (rd, mem) = (u.rd(), u.unit() == Unit::Lsu);
-            let hazard = |o: &DecodedInst| {
-                o.rd().is_some_and(|r| rd == Some(r) || u.rs().any(|s| s == r)) // WAW, RAW
-                    || rd.is_some_and(|r| o.rs().any(|s| s == r)) // WAR
-                    || (mem && o.unit() == Unit::Lsu) // memory ops stay in order
+            let u = &warp.ibuf[i];
+            let hazard = |o: &MicroOp| {
+                o.rd.is_some_and(|r| u.rd == Some(r) || u.rs.contains(&r)) // WAW, RAW
+                    || u.rd.is_some_and(|r| o.rs.contains(&r)) // WAR
+                    || (u.unit == Unit::Lsu && o.unit == Unit::Lsu) // memory ops stay in order
             };
-            (i == 0 || !u.is_control()) // control issues last
-                && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
-                && Self::ready_at(warp, &warp.ibuf[i], smem_free, gmem_free) <= now
+            (i == 0 || !u.inst.is_control()) // control issues last
+                && !warp.ibuf.range(..i).any(hazard)
+                && Self::ready_at(warp, u, smem_free, gmem_free) <= now
         })
     }
 
@@ -214,7 +212,7 @@ impl MuonCore {
         if let Some((wid, i)) = picked {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
-            self.stats.unit_issued[uop.inst.unit() as usize] += 1;
+            self.stats.unit_issued[uop.unit as usize] += 1;
             if uop.inst.is_control() {
                 self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
                 if uop.inst.is_barrier() {
@@ -222,7 +220,7 @@ impl MuonCore {
                     self.arrived = Some(self.warps[wid].cta());
                 }
             }
-            let unit = uop.inst.unit();
+            let unit = uop.unit;
             let latency = self.conf.passes(unit) - 1 + self.conf.units.get(unit).latency;
             let done = if uop.smem > 0 {
                 self.stats.smem_instrs += 1;
@@ -246,7 +244,7 @@ impl MuonCore {
             } else {
                 now + latency
             };
-            if let Some(rd) = uop.inst.rd() {
+            if let Some(rd) = uop.rd {
                 self.warps[wid].reg_ready[rd] = done;
             }
         } else if self.warps.iter().any(|w| !w.ibuf.is_empty()) {

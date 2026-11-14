@@ -91,7 +91,9 @@ impl Warp {
         let inst = u64::from_le_bytes(gmem.read_n::<8>(schedule.pc as usize).expect("failed to fetch instruction"));
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
-        MicroOp { inst, tmask: schedule.mask, smem: 0, gmem: 0 }
+        let mut rs = [0; 4];
+        zip(&mut rs, inst.rs()).for_each(|(s, r)| *s = r);
+        MicroOp { inst, tmask: schedule.mask, rd: inst.rd(), rs, unit: inst.unit(), smem: 0, gmem: 0 }
     }
 
     /// Execute `uop` functionally: read its operands, execute it, serve its memory requests and
@@ -110,7 +112,7 @@ impl Warp {
             let issued = ExecuteUnit::collect(&uop, &self.reg_file);
             let (mut rd_data, reqs) =
                 ExecuteUnit::execute(&issued, wid, tmask, &mut self.reg_file, &mut self.csr_file, scheduler);
-            let counts = if uop.inst.unit() == Unit::Lsu { self.mem(&mut rd_data, &reqs, smem, gmem) } else { (0, 0) };
+            let counts = if uop.unit == Unit::Lsu { self.mem(&mut rd_data, &reqs, smem, gmem) } else { (0, 0) };
             for (lrf, ldata) in zip(&mut self.reg_file, rd_data) {
                 ldata.map(|data| lrf.write_gpr(rd_addr, data));
             }

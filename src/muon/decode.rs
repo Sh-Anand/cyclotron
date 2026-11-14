@@ -225,6 +225,9 @@ impl Display for IssuedInst {
 pub struct MicroOp {
     pub inst: DecodedInst,
     pub tmask: u32,
+    pub rd: Option<usize>, // `inst.rd()`
+    pub rs: [usize; 4],    // `inst.rs()`; unused slots are 0, which is never a destination
+    pub unit: Unit,        // `inst.unit()`
     pub smem: u8, // shared memory request: distinct words in its fullest bank; 0 if not one
     pub gmem: u8, // global memory request: its lines waiting in `Warp::gmem_lines`
 }
