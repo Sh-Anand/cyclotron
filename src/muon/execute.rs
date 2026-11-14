@@ -45,23 +45,6 @@ impl Opcode {
     pub const NU_COMPLETE: u16 = 0b101011011u16;
 }
 
-// TODO: use bitflags crate for this
-#[derive(Debug)]
-pub struct InstAction;
-
-impl InstAction {
-    pub const NONE: u32 = 0;
-    pub const WRITE_REG: u32 = 1 << 0;
-    pub const MEM_LOAD: u32 = 1 << 1;
-    pub const MEM_STORE: u32 = 1 << 2;
-    pub const SET_ABS_PC: u32 = 1 << 3;
-    pub const SET_REL_PC: u32 = 1 << 4;
-    pub const LINK: u32 = 1 << 5;
-    pub const FENCE: u32 = 1 << 6;
-    pub const SFU: u32 = 1 << 7;
-    pub const CSR: u32 = 1 << 8;
-}
-
 macro_rules! f3_f7_mask {
     ($f3:expr, $f7:expr) => {
         ((($f3 as u16) << 7) | ($f7 as u16))
