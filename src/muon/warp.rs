@@ -125,7 +125,7 @@ impl Warp {
         let core_id = self.conf.lane_config.core_id;
         let issued = ExecuteUnit::collect(&uop, &self.reg_file);
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let ex = ExecuteUnit::execute(issued, core_id, wid, tmask, &mut self.reg_file, &mut self.csr_file, scheduler);
+            let ex = ExecuteUnit::execute(issued, wid, tmask, &mut self.reg_file, &mut self.csr_file, scheduler);
             Self::mem(ex, smem, gmem)
         }));
 

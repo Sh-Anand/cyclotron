@@ -2,7 +2,6 @@ use crate::muon::config::MuonConfig;
 use crate::muon::decode::IssuedInst;
 use crate::muon::execute::SFUType;
 use crate::utils::{BitMask, BitSlice};
-use log::info;
 use std::collections::VecDeque;
 
 #[derive(Debug, Default)]
@@ -38,7 +37,6 @@ pub struct Scheduler {
 impl Scheduler {
     pub fn new(config: MuonConfig) -> Self {
         let num_warps = config.num_warps;
-        info!("scheduler instantiated with {} warps!", num_warps);
         Scheduler {
             conf: config,
             state: SchedulerState {
@@ -90,15 +88,9 @@ impl Scheduler {
     ) {
         // for warp-wide operations, we take lane 0 to be the truth
         self.state.pc[wid] = decoded_inst.pc + 8; // flush
-        info!(
-            "processing writeback for {}: resetting next pc to 0x{:08x}",
-            wid,
-            decoded_inst.pc + 8
-        );
         match sfu {
             SFUType::TMC => {
                 let tmask = rs1[first_lid] & self.all_one_bitmask();
-                info!("tmc value {:x}", tmask);
                 self.state.thread_masks[wid] = tmask;
                 if tmask == 0 {
                     self.state.active_warps.mut_bit(wid, false);
@@ -107,7 +99,6 @@ impl Scheduler {
             SFUType::WSPAWN => {
                 let start_pc = rs2[first_lid];
                 let count = rs1[first_lid];
-                info!("wspawn {} warps @pc={:08x}", rs1[first_lid], start_pc);
                 for i in 1..count as usize {
                     if self.state.active_warps.bit(i) {
                         continue;
@@ -117,7 +108,6 @@ impl Scheduler {
                     self.state.pc[i] = start_pc;
                     self.state.thread_masks[i] = self.all_one_bitmask();
                 }
-                info!("new active warps: {:b}", self.state.active_warps);
             }
             SFUType::SPLIT => {
                 // deviation from vortex behavior: instead of checking for 1,
@@ -128,10 +118,6 @@ impl Scheduler {
                 let else_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
                     & self.state.thread_masks[wid];
 
-                info!(
-                    "split warp {}: then_mask={:08b}, else_mask={:08b}, invert={}",
-                    wid, then_mask, else_mask, invert
-                );
 
                 // NOTE: we should not need to push the else-path of
                 // non-divergent branches to the ipdom stack; this way, the
@@ -162,10 +148,6 @@ impl Scheduler {
                 let entry = self.state.ipdom_stack[wid]
                     .pop_back()
                     .expect("join without split");
-                info!(
-                    "join warp {}: pc=0x{:08x}, tmask={:b}",
-                    wid, entry.pc, entry.tmask
-                );
                 if entry.pc > 0 {
                     self.state.pc[wid] = entry.pc;
                 }

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use log::warn;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use toml::*;
@@ -18,7 +17,7 @@ pub trait Config: DeserializeOwned + Default {
         match section {
             Some(value) => value.clone().try_into().expect("cannot deserialize config"),
             None => {
-                warn!("config section not found");
+                eprintln!("config section not found");
                 Self::default()
             }
         }

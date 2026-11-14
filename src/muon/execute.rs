@@ -4,7 +4,6 @@ use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
 use crate::utils::BitSlice;
 use half::bf16;
-use log::{debug, error};
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
@@ -72,7 +71,6 @@ macro_rules! f3_f7_mask {
 
 macro_rules! print_and_execute {
     ($inst:expr, $operands:expr) => {{
-        debug!("{} {:08x?}", $inst.0, $operands);
         $inst.1($operands)
     }};
 }
@@ -80,7 +78,6 @@ macro_rules! print_and_execute {
 #[macro_export]
 macro_rules! print_and_unwrap {
     ($inst:expr) => {{
-        debug!("{}", $inst.0);
         $inst.1
     }};
 }
@@ -122,7 +119,7 @@ impl ExecuteUnit {
         fn check_zero(b: u32) -> bool {
             if b == 0 {
                 // we should not panic - real riscv returns -1 on division by 0
-                error!("divide by zero");
+                eprintln!("divide by zero");
                 true
             } else {
                 false
@@ -547,12 +544,7 @@ impl ExecuteUnit {
 
     fn amo(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
         let funct5 = issued_inst.f7 >> 2;
-        let mnemonic = match funct5 {
-            0b00000 => "amoadd.w",
-            0b00001 => "amoswap.w",
-            _ => panic!("unsupported AMO funct5={:#07b}", funct5),
-        };
-        debug!("{}", mnemonic);
+        assert!(matches!(funct5, 0b00000 | 0b00001), "unsupported AMO funct5={:#07b}", funct5); // amoadd.w, amoswap.w
 
         let addr = issued_inst.rs1_data[lane].unwrap();
         let data = issued_inst.rs2_data[lane].unwrap();
@@ -600,7 +592,6 @@ impl ExecuteUnit {
             .map(|lane| tmask.bit(lane).then(|| csrf.read(addr, lane, tmask, active_warps)))
             .collect();
         let old = csrf.read(addr, first_lid, tmask, active_warps);
-        debug!("csr read address {:04x} => value {}", addr, old);
         csrf.write(addr, match csr_type {
             CSRType::RW | CSRType::RWI => operand,
             CSRType::RS | CSRType::RSI => old | operand,
@@ -739,7 +730,6 @@ impl ExecuteUnit {
 
     pub fn execute(
         issued: IssuedInst,
-        cid: usize,
         wid: usize,
         tmask: u32,
         rf: &mut [RegFile],
@@ -750,10 +740,6 @@ impl ExecuteUnit {
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
-        debug!(
-            "ISSUE: core:{}, warp:{}, {}, tmask: {:b}",
-            cid, wid, issued, tmask
-        );
 
         let empty = vec![None::<u32>; num_lanes];
         // no mem requests is an empty vec, which Warp::mem passes straight through

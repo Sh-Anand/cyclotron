@@ -1,7 +1,6 @@
 #![allow(unused)]
 #![allow(unused_macros)]
 
-use log::info;
 use num_traits::{PrimInt, Unsigned};
 
 pub trait BitSlice {
