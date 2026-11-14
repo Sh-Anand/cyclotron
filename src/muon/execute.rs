@@ -1,6 +1,6 @@
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
-use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
+use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
 use crate::utils::BitSlice;
 use half::bf16;
@@ -615,7 +615,7 @@ impl ExecuteUnit {
         first_lid: usize,
         rf: &mut [RegFile],
         scheduler: &mut Scheduler,
-    ) -> SchedulerWriteback {
+    ) {
         let insts = phf_map! {
             // sets thread mask to rs1[NT-1:0]
             0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
@@ -758,60 +758,44 @@ impl ExecuteUnit {
         let empty = vec![None::<u32>; num_lanes];
         // no mem requests is an empty vec, which Warp::mem passes straight through
         let empty_mem = Vec::<Option<MemRequest>>::new();
-        let empty_swb = SchedulerWriteback::default();
 
-        let (rd_wb, mem_req, sched_wb) = match issued.opcode {
+        let (rd_wb, mem_req) = match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => (
                 Self::collect_lanes(ExecuteUnit::alu(&issued), tmask, rf),
                 empty_mem,
-                empty_swb,
             ),
             Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => (
                 Self::collect_lanes(|lane| ExecuteUnit::fpu(&issued, lane), tmask, rf),
                 empty_mem,
-                empty_swb,
             ),
-            Opcode::BRANCH => (
-                empty,
-                empty_mem,
-                match ExecuteUnit::branch(&issued, first_lid) {
-                    Some(target) => scheduler.take_branch(wid, target),
-                    None => empty_swb,
-                },
-            ),
+            Opcode::BRANCH => {
+                if let Some(target) = ExecuteUnit::branch(&issued, first_lid) {
+                    scheduler.take_branch(wid, target);
+                }
+                (empty, empty_mem)
+            }
             Opcode::JAL => {
-                let sched_wb = scheduler.take_branch(wid, issued.pc.wrapping_add(issued.imm32));
-                (
-                    Self::collect_lanes(|_| Some(issued.pc + 8), tmask, rf),
-                    empty_mem,
-                    sched_wb,
-                )
+                scheduler.take_branch(wid, issued.pc.wrapping_add(issued.imm32));
+                (Self::collect_lanes(|_| Some(issued.pc + 8), tmask, rf), empty_mem)
             }
             Opcode::JALR => {
                 let target = issued.rs1_data[first_lid]
                     .unwrap()
                     .wrapping_add(issued.imm32);
-                let sched_wb = scheduler.take_branch(wid, target);
-                (
-                    Self::collect_lanes(|_| Some(issued.pc + 8), tmask, rf),
-                    empty_mem,
-                    sched_wb,
-                )
+                scheduler.take_branch(wid, target);
+                (Self::collect_lanes(|_| Some(issued.pc + 8), tmask, rf), empty_mem)
             }
             Opcode::LOAD => (
                 empty,
                 Self::collect_lanes(|lane| ExecuteUnit::load(&issued, lane), tmask, rf),
-                empty_swb,
             ),
             Opcode::STORE => (
                 empty,
                 Self::collect_lanes(|lane| ExecuteUnit::store(&issued, lane), tmask, rf),
-                empty_swb,
             ),
             Opcode::AMO => (
                 empty,
                 Self::collect_lanes(|lane| ExecuteUnit::amo(&issued, lane), tmask, rf),
-                empty_swb,
             ),
             Opcode::MISC_MEM => {
                 let imp = match issued.f3 {
@@ -822,30 +806,24 @@ impl ExecuteUnit {
                 };
                 print_and_unwrap!(imp);
                 // TODO fence
-                (empty, empty_mem, empty_swb)
+                (empty, empty_mem)
             }
             Opcode::SYSTEM => {
                 if issued.f3 == 0 {
                     // tohost
                     // FIXME: tmask?
-                    (
-                        empty,
-                        empty_mem,
-                        ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler),
-                    )
+                    ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler);
+                    (empty, empty_mem)
                 } else {
                     // csr
                     let rds = ExecuteUnit::csr(&issued, tmask, num_lanes, csrf, scheduler.active_warp_mask());
-                    (rds, empty_mem, empty_swb)
+                    (rds, empty_mem)
                 }
             }
             Opcode::CUSTOM0 => {
                 // FIXME: tmask?
-                (
-                    empty,
-                    empty_mem,
-                    ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler),
-                )
+                ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler);
+                (empty, empty_mem)
             }
             Opcode::CUSTOM1 => {
                 // 0b000_0000000u16 => InstImp("vx_tex",  |[a, b, c]| { }),
@@ -859,26 +837,13 @@ impl ExecuteUnit {
             Opcode::CUSTOM3 => (
                 Self::collect_lanes(|lane| ExecuteUnit::custom3(&issued, lane), tmask, rf),
                 empty_mem,
-                empty_swb,
             ),
             _ => {
                 panic!("unimplemented opcode 0x{:x}", issued.opcode);
             }
         };
 
-        let issued_rd_addr = issued.rd_addr;
-        let writeback = ExWriteback {
-            inst: issued,
-            tmask,
-            rd_addr: issued_rd_addr,
-            rd_data: rd_wb,
-            mem_req,
-            sched_wb,
-        };
-
-        // debug!("WRITEBACK: {}", writeback);
-
-        writeback
+        ExWriteback { rd_addr: issued.rd_addr, rd_data: rd_wb, mem_req }
     }
 
     /// Generate rd writeback for the memory load responses handled after EX & came back from

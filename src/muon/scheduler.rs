@@ -14,13 +14,6 @@ pub struct IpdomEntry {
     pub tmask: u32,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct IpdomPush {
-    pub restored_mask: u32,
-    pub else_mask: u32,
-    pub else_pc: u32,
-}
-
 #[derive(Debug, Default)]
 pub struct SchedulerState {
     pub active_warps: u32,
@@ -36,15 +29,6 @@ pub struct SchedulerState {
 pub struct Schedule {
     pub pc: u32,
     pub mask: u32,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SchedulerWriteback {
-    pub pc: Option<u32>,
-    pub tmask: Option<u32>,
-    pub wspawn_pc_count: Option<(u32, u32)>,
-    pub tohost: Option<u32>,
-    pub ipdom_push: Option<IpdomPush>,
 }
 
 // instantiated per core
@@ -92,16 +76,12 @@ impl Scheduler {
         self.base.state.allocated.mut_bit(wid, true);
     }
 
-    pub fn take_branch(&mut self, wid: usize, target_pc: u32) -> SchedulerWriteback {
+    pub fn take_branch(&mut self, wid: usize, target_pc: u32) {
         self.base.state.pc[wid] = target_pc;
         if target_pc == 0 {
             // returned from main
             self.base.state.thread_masks[wid] = 0;
             self.base.state.active_warps.mut_bit(wid, false);
-        }
-        SchedulerWriteback {
-            pc: Some(target_pc),
-            ..SchedulerWriteback::default()
         }
     }
 
@@ -113,7 +93,7 @@ impl Scheduler {
         decoded_inst: &IssuedInst,
         rs1: Vec<u32>,
         rs2: Vec<u32>,
-    ) -> SchedulerWriteback {
+    ) {
         // for warp-wide operations, we take lane 0 to be the truth
         self.base.state.pc[wid] = decoded_inst.pc + 8; // flush
         info!(
@@ -128,10 +108,6 @@ impl Scheduler {
                 self.base.state.thread_masks[wid] = tmask;
                 if tmask == 0 {
                     self.base.state.active_warps.mut_bit(wid, false);
-                }
-                SchedulerWriteback {
-                    tmask: Some(tmask),
-                    ..SchedulerWriteback::default()
                 }
             }
             SFUType::WSPAWN => {
@@ -148,10 +124,6 @@ impl Scheduler {
                     self.base.state.thread_masks[i] = self.all_one_bitmask();
                 }
                 info!("new active warps: {:b}", self.base.state.active_warps);
-                SchedulerWriteback {
-                    wspawn_pc_count: Some((start_pc, count)),
-                    ..SchedulerWriteback::default()
-                }
             }
             SFUType::SPLIT => {
                 // deviation from vortex behavior: instead of checking for 1,
@@ -191,15 +163,6 @@ impl Scheduler {
                     });
                     self.base.state.thread_masks[wid] = now_mask;
                 }
-                SchedulerWriteback {
-                    tmask: diverges.then_some(now_mask),
-                    ipdom_push: Some(IpdomPush {
-                        restored_mask: then_mask | else_mask,
-                        else_mask: later_mask,
-                        else_pc: decoded_inst.pc + 8,
-                    }),
-                    ..SchedulerWriteback::default()
-                }
             }
             SFUType::JOIN => {
                 let entry = self.base.state.ipdom_stack[wid]
@@ -213,10 +176,8 @@ impl Scheduler {
                     self.base.state.pc[wid] = entry.pc;
                 }
                 self.base.state.thread_masks[wid] = entry.tmask;
-                // join is not visible to cyclotron in cosim
-                SchedulerWriteback::default()
             }
-            SFUType::BAR => SchedulerWriteback::default(),
+            SFUType::BAR => {}
             SFUType::PRED => {
                 let invert = decoded_inst.rd_addr != 0;
                 let pred_mask = rs1
@@ -234,28 +195,16 @@ impl Scheduler {
                         self.base.state.active_warps.mut_bit(wid, false);
                     }
                 }
-                SchedulerWriteback {
-                    tmask: Some(self.base.state.thread_masks[wid]),
-                    ..SchedulerWriteback::default()
-                }
             }
             SFUType::KILL => {
                 self.base.state.thread_masks[wid] = 0;
                 self.base.state.active_warps.mut_bit(wid, false);
-                SchedulerWriteback {
-                    tmask: Some(0),
-                    ..SchedulerWriteback::default()
-                }
             }
             SFUType::ECALL => {
                 let a0 = rs1[first_lid];
                 self.base.state.tohost = Some(a0);
                 self.base.state.thread_masks[wid] = 0;
                 self.base.state.active_warps.mut_bit(wid, false);
-                SchedulerWriteback {
-                    tohost: Some(a0),
-                    ..SchedulerWriteback::default()
-                }
             }
         }
     }

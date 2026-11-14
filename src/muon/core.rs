@@ -274,7 +274,7 @@ impl MuonCore {
 
     /// Execute one instruction functionally; returns its `MicroOp::smem` count.
     fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<u8, ExecErr> {
-        let (_, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
+        let mem_lines = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
         let banks = self.conf().smem.banks;
         let mut words: Vec<_> = // (bank, word) of each shared memory access
             mem_lines.iter().filter(|l| l.is_smem).map(|l| (l.address as usize / 4 % banks, l.address / 4)).collect();

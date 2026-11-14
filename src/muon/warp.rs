@@ -5,14 +5,13 @@ use crate::info;
 use crate::muon::config::MuonConfig;
 use crate::muon::core::CtaId;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
+use crate::muon::decode::{DecodeUnit, MicroOp, RegFile};
 use crate::muon::execute::ExecuteUnit;
-use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
+use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::fmt::{Display, Formatter};
 use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -51,16 +50,12 @@ impl ModuleBehaviors for Warp {
 
 module!(Warp, WarpState, MuonConfig,);
 
-/// Writeback result from the execute stage modulo memory load/stores,
-/// which will be handled in the mem stage.
+/// What the execute stage produced: rd data per lane, and the memory requests still to serve.
 #[derive(Debug)]
 pub struct ExWriteback {
-    pub inst: IssuedInst,
-    pub tmask: u32,
     pub rd_addr: u8,
     pub rd_data: Vec<Option<u32>>,
     pub mem_req: Vec<Option<MemRequest>>,
-    pub sched_wb: SchedulerWriteback,
 }
 
 #[derive(Clone, Debug)]
@@ -89,48 +84,11 @@ pub struct MemResponse {
     pub is_sext: bool,
 }
 
-#[derive(Debug)]
-pub struct Writeback {
-    pub inst: IssuedInst,
-    pub tmask: u32,
-    pub rd_addr: u8,
-    pub rd_data: Vec<Option<u32>>,
-    pub sched_wb: SchedulerWriteback,
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct ExecErr {
     pub pc: u32,
     pub warp_id: usize,
     pub message: Option<String>,
-}
-
-impl Writeback {
-    pub fn rd_data_str(&self) -> String {
-        let lanes: Vec<String> = self
-            .rd_data
-            .iter()
-            .map(|lrd| match lrd {
-                Some(value) => format!("0x{:x}", value),
-                None => ".".to_string(),
-            })
-            .collect();
-        format!("[{}]", lanes.join(","))
-    }
-
-    pub fn num_rd_data(&self) -> usize {
-        self.rd_data.iter().map(|lrd| lrd.is_some()).count()
-    }
-}
-
-impl Display for Writeback {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Writeback {{ inst: {}, tmask: {:b}, rd_addr: {}, rd_data: {:?}, sched_wb: {{ pc: {:?} }} }}",
-            self.inst, self.tmask, self.rd_addr, self.rd_data, self.sched_wb.pc
-        )
-    }
 }
 
 impl Warp {
@@ -164,14 +122,6 @@ impl Warp {
         me
     }
 
-    fn name(&self) -> String {
-        format!(
-            "core {} warp {}",
-            self.conf().lane_config.core_id,
-            self.conf().lane_config.warp_id
-        )
-    }
-
     pub fn frontend(&mut self, schedule: Schedule, gmem: &FlatMemory) -> MicroOp {
         // fetch
         let inst = u64::from_le_bytes(gmem.read_n::<8>(schedule.pc as usize).expect("failed to fetch instruction"));
@@ -180,146 +130,59 @@ impl Warp {
         MicroOp { inst, tmask: schedule.mask, smem: 0 }
     }
 
+    /// Execute `uop` functionally: read its operands, execute it, serve its memory requests and
+    /// write rd.  Returns the memory its lanes accessed.
     pub fn backend(
         &mut self,
         uop: MicroOp,
         scheduler: &mut Scheduler,
         smem: &mut FlatMemory,
         gmem: &mut FlatMemory,
-    ) -> Result<(Writeback, Vec<MemAccess>), ExecErr> {
-        let pc = uop.inst.pc;
-        let tmask = uop.tmask;
+    ) -> Result<Vec<MemAccess>, ExecErr> {
+        let (pc, tmask, wid) = (uop.inst.pc, uop.tmask, self.wid);
+        assert!(scheduler.state().thread_masks[wid] == tmask, "scheduler tmask was not set correctly");
 
-        assert!(
-            scheduler.state().thread_masks[self.wid] == tmask,
-            "scheduler tmask was not set correctly"
-        );
-        scheduler.state_mut().thread_masks[self.wid] = tmask;
-
-        // operand collection
-        let issued = self.collect(&uop);
-
-        // execute
-        let writeback = catch_unwind(AssertUnwindSafe(|| {
-            let ex_wb = self.execute_nomem(issued, tmask, scheduler);
-            self.mem(&ex_wb, smem, gmem)
+        let core_id = self.conf().lane_config.core_id;
+        let state = &mut self.base.state;
+        let issued = ExecuteUnit::collect(&uop, &state.reg_file);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let ex = ExecuteUnit::execute(issued, core_id, wid, tmask, &mut state.reg_file, &mut state.csr_file, scheduler);
+            Self::mem(ex, smem, gmem)
         }));
 
-        // writeback
-        match writeback {
-            Ok((writeback, accesses)) => {
-                self.writeback(&writeback);
-
-                info!(
-                    self.logger,
-                    "[{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
-                    self.name(),
-                    pc,
-                    writeback.rd_addr,
-                    writeback.num_rd_data()
-                );
-
-                Ok((writeback, accesses))
-            }
-            Err(payload) => {
-                let message = payload.downcast::<String>().ok().map(|s| *s);
-                Err(ExecErr {
-                    pc,
-                    warp_id: self.wid,
-                    message,
-                })
-            }
-        }
-    }
-
-    /// Collect source operand values from the regfile.
-    pub fn collect(&mut self, uop: &MicroOp) -> IssuedInst {
-        let rf = self.base.state.reg_file.as_slice();
-        ExecuteUnit::collect(&uop, rf)
-    }
-
-    /// Execute stage, but only generates mem requests without serving them with the internal
-    /// gmem/smem.
-    pub fn execute_nomem(
-        &mut self,
-        issued: IssuedInst,
-        tmask: u32,
-        scheduler: &mut Scheduler,
-    ) -> ExWriteback {
-        let core_id = self.conf().lane_config.core_id;
-        let rf = self.base.state.reg_file.as_mut_slice();
-        let csrf = &mut self.base.state.csr_file;
-
-        // ALU/FPU/AddrGen stage
-        ExecuteUnit::execute(
-            issued, core_id, self.wid, tmask, rf, csrf, scheduler,
-        )
-    }
-
-    /// Memory stage; serve the memory requests produced in EX.
-    pub fn mem(
-        &mut self,
-        ex_writeback: &ExWriteback,
-        smem: &mut FlatMemory,
-        gmem: &mut FlatMemory,
-    ) -> (Writeback, Vec<MemAccess>) {
-        // most instructions touch no memory: pass the EX writeback straight through
-        if ex_writeback.mem_req.iter().all(Option::is_none) {
-            return (
-                Writeback {
-                    inst: ex_writeback.inst.clone(),
-                    tmask: ex_writeback.tmask,
-                    rd_addr: ex_writeback.rd_addr,
-                    rd_data: ex_writeback.rd_data.clone(),
-                    sched_wb: ex_writeback.sched_wb,
-                },
-                vec![],
-            );
-        }
-        let mem_responses = ex_writeback
-            .mem_req
-            .iter()
-            .map(|oreq| oreq.as_ref().map(|req| Self::mem_response(req, smem, gmem)))
-            .collect::<Vec<_>>();
-        let accesses = (ex_writeback.mem_req.iter().flatten())
-            .map(|req| MemAccess { is_smem: req.is_smem, address: req.addr, size: req.size })
-            .collect::<Vec<_>>();
-
-        let rd_mem = ex_writeback
-            .mem_req
-            .iter()
-            .enumerate()
-            .map(|(i, oreq)| match oreq {
-                Some(req) => {
-                    let resp = mem_responses[i]
-                        .as_ref()
-                        .expect("missing memory response for a lane");
-                    ExecuteUnit::mem_writeback(req, resp)
+        match result {
+            Ok((rd_addr, rd_data, accesses)) => {
+                for (lrf, ldata) in zip(&mut state.reg_file, rd_data) {
+                    ldata.map(|data| lrf.write_gpr(rd_addr, data));
                 }
-                None => None,
-            });
+                info!(self.logger, "[core {} warp {}] PC=0x{:08x}, rd={:3}", core_id, wid, pc, rd_addr);
+                Ok(accesses)
+            }
+            Err(payload) => Err(ExecErr { pc, warp_id: wid, message: payload.downcast::<String>().ok().map(|s| *s) }),
+        }
+    }
 
-        // consolidate rd's from EX and MEM
-        let rd_merged = zip(&ex_writeback.rd_data, rd_mem)
+    /// Serve the memory requests of an executed instruction: its rd address, its rd data merged
+    /// with what it loaded, and the memory its lanes accessed.
+    fn mem(ex: ExWriteback, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> (u8, Vec<Option<u32>>, Vec<MemAccess>) {
+        // most instructions touch no memory
+        if ex.mem_req.iter().all(Option::is_none) {
+            return (ex.rd_addr, ex.rd_data, vec![]);
+        }
+        let (mut accesses, mut rd_mem) = (vec![], vec![]);
+        for req in &ex.mem_req {
+            rd_mem.push(req.as_ref().and_then(|req| {
+                accesses.push(MemAccess { is_smem: req.is_smem, address: req.addr, size: req.size });
+                ExecuteUnit::mem_writeback(req, &Self::mem_response(req, smem, gmem))
+            }));
+        }
+        let rd_data = zip(ex.rd_data, rd_mem)
             .map(|(lrd_ex, lrd_mem)| {
-                assert!(
-                    lrd_mem.is_none() || lrd_ex.is_none(),
-                    "mem req generated for a lane that already has an EX rd writeback"
-                );
-                lrd_mem.or(*lrd_ex)
+                assert!(lrd_mem.is_none() || lrd_ex.is_none(), "mem req generated for a lane that already has an EX rd writeback");
+                lrd_mem.or(lrd_ex)
             })
-            .collect::<Vec<_>>();
-
-        (
-            Writeback {
-                inst: ex_writeback.inst.clone(),
-                tmask: ex_writeback.tmask,
-                rd_addr: ex_writeback.rd_addr,
-                rd_data: rd_merged,
-                sched_wb: ex_writeback.sched_wb,
-            },
-            accesses,
-        )
+            .collect();
+        (ex.rd_addr, rd_data, accesses)
     }
 
     /// Handle a per-lane memory request and generate a MemResponse.
@@ -370,16 +233,6 @@ impl Warp {
                 data: Some(load_data),
                 is_sext: mem_req.is_sext, // pass-through
             }
-        }
-    }
-
-    pub fn writeback(&mut self, wb: &Writeback) {
-        let rf = self.base.state.reg_file.as_mut_slice();
-
-        // note: scheduler writeback is done in-place
-        let rd_addr = wb.rd_addr;
-        for (lrf, ldata) in zip(rf, &wb.rd_data) {
-            ldata.map(|data| lrf.write_gpr(rd_addr, data));
         }
     }
 
