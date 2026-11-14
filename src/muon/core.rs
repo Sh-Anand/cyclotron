@@ -8,7 +8,6 @@ use crate::muon::stats::CoreStats;
 use crate::muon::warp::{ExecErr, Warp};
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::sim::trace::{MemTracer, Tracer};
 use crate::utils::BitSlice;
 use std::sync::Arc;
 
@@ -26,9 +25,6 @@ pub struct MuonCore {
     pub warps: Vec<Warp>,
 
     logger: Arc<Logger>,
-    tracer: Arc<Tracer>,
-    mem_tracer: Arc<MemTracer>,
-    pub trace: bool,
     pub stats: CoreStats, // accumulates across CTAs; not cleared by reset
     pub arrived: Option<CtaId>, // CTA of a warp that just issued a barrier
     pub l0: usize, // this core's instruction cache
@@ -66,9 +62,6 @@ impl MuonCore {
                 })
                 .collect(),
             logger: logger.clone(),
-            tracer: Arc::new(Tracer::new(&config)),
-            mem_tracer: Arc::new(MemTracer::new()),
-            trace: false,
             stats: CoreStats::default(),
             arrived: None,
             l0,
@@ -279,13 +272,9 @@ impl MuonCore {
         Ok(())
     }
 
-    /// Execute one instruction functionally and trace it; returns its `MicroOp::smem` count.
+    /// Execute one instruction functionally; returns its `MicroOp::smem` count.
     fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<u8, ExecErr> {
-        let (wb, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
-        if self.trace {
-            Arc::get_mut(&mut self.tracer).expect("failed to get tracer").record(wid, &wb);
-            Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer").record(&mem_lines);
-        }
+        let (_, mem_lines) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
         let banks = self.conf().smem.banks;
         let mut words: Vec<_> = // (bank, word) of each shared memory access
             mem_lines.iter().filter(|l| l.is_smem).map(|l| (l.address as usize / 4 % banks, l.address / 4)).collect();
@@ -301,22 +290,6 @@ impl MuonCore {
             self.warps[wid].gmem_lines.push_back(lines);
         }
         Ok(smem)
-    }
-
-    pub fn get_tracer_mut(&mut self) -> &mut Tracer {
-        Arc::get_mut(&mut self.tracer).expect("failed to get tracer")
-    }
-
-    pub fn get_tracer(&self) -> &Tracer {
-        &self.tracer
-    }
-
-    pub fn get_mem_tracer_mut(&mut self) -> &mut MemTracer {
-        Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer")
-    }
-
-    pub fn get_mem_tracer(&self) -> &MemTracer {
-        &self.mem_tracer
     }
 
 }

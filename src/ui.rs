@@ -20,8 +20,6 @@ pub struct CyclotronArgs {
     pub num_cores: Option<usize>,
     #[arg(long, help = "Enable log at level (0:none, 1:info, 2:debug)")]
     pub log: Option<u64>,
-    #[arg(long, help = "Generate instruction trace")]
-    pub gen_trace: Option<bool>,
 }
 
 pub fn read_toml(filepath: &Path) -> String {
@@ -51,7 +49,6 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
     if let Some(args) = cli_args {
         sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);
         sim_config.log_level = args.log.unwrap_or(sim_config.log_level);
-        sim_config.trace = args.gen_trace.unwrap_or(sim_config.trace);
         muon_config.num_lanes = args.num_lanes.unwrap_or(muon_config.num_lanes);
         muon_config.num_warps = args.num_warps.unwrap_or(muon_config.num_warps);
         muon_config.num_cores = args.num_cores.unwrap_or(muon_config.num_cores);

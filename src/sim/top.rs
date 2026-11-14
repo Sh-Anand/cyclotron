@@ -7,52 +7,21 @@ use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::sim::trace_db::{default_trace_db_path, TraceDb};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct Sim {
     pub config: SimConfig,
     pub top: CyclotronTop,
     pub logger: Arc<Logger>,
-    trace_db: Option<Mutex<TraceDb>>,
 }
 
 impl Sim {
-    fn drain_traces(&mut self) {
-        let Some(trace_db) = self.trace_db.as_ref() else {
-            return;
-        };
-        let trace_db = trace_db.lock().expect("trace db lock poisoned");
-
-        for (core_id, core) in self.top.sm.cores.iter_mut().enumerate() {
-            let num_warps = core.conf().num_warps;
-            for warp_id in 0..num_warps {
-                while let Some(line) = core.get_tracer_mut().consume(warp_id) {
-                    trace_db.record_inst_line(0, core_id as u32, &line);
-                }
-            }
-            while let Some(line) = core.get_mem_tracer_mut().consume() {
-                trace_db.record_mem_line(0, core_id as u32, &line);
-            }
-        }
-    }
-
     pub fn new(
         sim_config: SimConfig,
         muon_config: MuonConfig,
         mem_config: MemConfig,
     ) -> Sim {
-        let trace_db = if sim_config.trace {
-            let trace_db_path = default_trace_db_path(None, Some(sim_config.elf.as_path()));
-            println!(
-                "Cyclotron: writing ISA instruction trace to {}",
-                trace_db_path.display()
-            );
-            Some(Mutex::new(TraceDb::new(&trace_db_path)))
-        } else {
-            None
-        };
         let logger = Arc::new(Logger::new(sim_config.log_level));
         let top = CyclotronTop::new(
             Arc::new(CyclotronConfig {
@@ -68,7 +37,6 @@ impl Sim {
             config: sim_config,
             top,
             logger,
-            trace_db,
         };
         sim.top.reset();
         sim
@@ -109,7 +77,6 @@ impl Sim {
             return;
         }
         self.top.tick_one();
-        self.drain_traces();
     }
 
     pub fn finished(&self) -> bool {

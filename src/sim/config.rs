@@ -11,7 +11,6 @@ pub struct SimConfig {
     pub elf: PathBuf,
     pub log_level: u64,
     pub timeout: u64,
-    pub trace: bool,
 }
 
 pub trait Config: DeserializeOwned + Default {
@@ -34,7 +33,6 @@ impl Default for SimConfig {
             elf: PathBuf::new(),
             log_level: 0,
             timeout: 10000000,
-            trace: false,
         }
     }
 }

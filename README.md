@@ -31,7 +31,6 @@ cargo run --release -- config.toml --binary-path path/to/kernel.elf
 | `--num-warps <N>` | Override warps per core (default: 4) |
 | `--num-cores <N>` | Override cores per cluster (default: 1) |
 | `--log <level>` | Log level: 0=none, 1=info, 2=debug |
-| `--gen-trace <bool>` | Generate instruction trace |
 
 ### Example: Run ISA tests
 

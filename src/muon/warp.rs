@@ -10,7 +10,6 @@ use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::sim::trace::MemTraceLine;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
@@ -74,6 +73,14 @@ pub struct MemRequest {
     pub is_smem: bool,
     pub is_amo: bool,
     pub amo_op: u8,
+}
+
+/// one lane's access to shared or global memory
+#[derive(Clone, Debug)]
+pub struct MemAccess {
+    pub is_smem: bool,
+    pub address: u32,
+    pub size: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -179,7 +186,7 @@ impl Warp {
         scheduler: &mut Scheduler,
         smem: &mut FlatMemory,
         gmem: &mut FlatMemory,
-    ) -> Result<(Writeback, Vec<MemTraceLine>), ExecErr> {
+    ) -> Result<(Writeback, Vec<MemAccess>), ExecErr> {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
 
@@ -200,7 +207,7 @@ impl Warp {
 
         // writeback
         match writeback {
-            Ok((writeback, mem_trace_lines)) => {
+            Ok((writeback, accesses)) => {
                 self.writeback(&writeback);
 
                 info!(
@@ -212,7 +219,7 @@ impl Warp {
                     writeback.num_rd_data()
                 );
 
-                Ok((writeback, mem_trace_lines))
+                Ok((writeback, accesses))
             }
             Err(payload) => {
                 let message = payload.downcast::<String>().ok().map(|s| *s);
@@ -255,7 +262,7 @@ impl Warp {
         ex_writeback: &ExWriteback,
         smem: &mut FlatMemory,
         gmem: &mut FlatMemory,
-    ) -> (Writeback, Vec<MemTraceLine>) {
+    ) -> (Writeback, Vec<MemAccess>) {
         // most instructions touch no memory: pass the EX writeback straight through
         if ex_writeback.mem_req.iter().all(Option::is_none) {
             return (
@@ -274,25 +281,8 @@ impl Warp {
             .iter()
             .map(|oreq| oreq.as_ref().map(|req| Self::mem_response(req, smem, gmem)))
             .collect::<Vec<_>>();
-        let mem_trace_lines = ex_writeback
-            .mem_req
-            .iter()
-            .enumerate()
-            .filter_map(|(lane_id, oreq)| {
-                let req = oreq.as_ref()?;
-                let resp = mem_responses[lane_id]
-                    .as_ref()
-                    .expect("missing memory response for a lane");
-                Some(MemTraceLine {
-                    warp_id: self.wid as u32,
-                    lane_id: lane_id as u32,
-                    is_smem: req.is_smem,
-                    store: req.is_store,
-                    address: req.addr,
-                    size: req.size,
-                    data: trace_mem_data(req, resp),
-                })
-            })
+        let accesses = (ex_writeback.mem_req.iter().flatten())
+            .map(|req| MemAccess { is_smem: req.is_smem, address: req.addr, size: req.size })
             .collect::<Vec<_>>();
 
         let rd_mem = ex_writeback
@@ -328,7 +318,7 @@ impl Warp {
                 rd_data: rd_merged,
                 sched_wb: ex_writeback.sched_wb,
             },
-            mem_trace_lines,
+            accesses,
         )
     }
 
@@ -410,25 +400,4 @@ impl Warp {
         self.base.state.csr_file.set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
     }
 
-}
-
-fn trace_mem_data(mem_req: &MemRequest, mem_resp: &MemResponse) -> u32 {
-    if mem_req.is_store {
-        let store_data = mem_req.data.expect("store req missing a data field");
-        mask_mem_data(store_data, mem_req.size)
-    } else {
-        let raw_load = u32::from_le_bytes(mem_resp.data.expect("load response missing data"));
-        let bit_offset = ((mem_req.addr & 3) * 8) as usize;
-        let shifted = raw_load >> bit_offset;
-        mask_mem_data(shifted, mem_req.size)
-    }
-}
-
-fn mask_mem_data(data: u32, size: u32) -> u32 {
-    match size {
-        1 => data & 0xff,
-        2 => data & 0xffff,
-        4 => data,
-        _ => panic!("unimplemented mem trace size"),
-    }
 }
