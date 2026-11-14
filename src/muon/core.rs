@@ -33,6 +33,7 @@ pub struct MuonCore {
     pub arrived: Option<CtaId>, // CTA of a warp that just issued a barrier
     pub l0: usize, // this core's instruction cache
     pub l1: usize, // its SM's cache, the first level for data
+    pub wake: u64, // first cycle it could issue or decode anything; a spawn or a barrier release resets it
 }
 
 impl MuonCore {
@@ -72,6 +73,7 @@ impl MuonCore {
             arrived: None,
             l0,
             l1,
+            wake: 0,
         };
 
         info!(
@@ -101,6 +103,7 @@ impl MuonCore {
             self.warps[*wid].regs = regs;
             self.warps[*wid].fetch_ready = 0;
         }
+        self.wake = 0;
     }
 
     /// unallocated warp slots, as many as the core's free regs hold at `regs` per thread
@@ -137,6 +140,22 @@ impl MuonCore {
         Some((wid, i))
     }
 
+    /// the cycle entry `e` of `warp` has its registers and memory ready, ignoring older entries
+    fn ready_at(warp: &Warp, e: &MicroOp, smem_free: u64, gmem_free: u64) -> u64 {
+        let u = &e.inst;
+        let regs = u.rs().chain(u.rd()).map(|r| warp.reg_ready[r]).max().unwrap_or(0); // scoreboard: RAW, WAW
+        // one memory op at a time per SM, for shared memory and for global memory.  A global op also
+        // waits for the warp's older stores, and a store for its older loads
+        let mem = if u.unit() != Unit::Lsu {
+            0
+        } else if e.smem > 0 {
+            smem_free
+        } else {
+            gmem_free.max(warp.store_done).max(if u.is_store() { warp.load_done } else { 0 })
+        };
+        regs.max(mem)
+    }
+
     /// oldest ibuf entry of warp `w` with no hazard on older entries and its registers ready at `now`
     fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64) -> Option<usize> {
         let warp = &self.warps[w];
@@ -150,14 +169,7 @@ impl MuonCore {
             };
             (i == 0 || !u.is_control()) // control issues last
                 && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
-                && u.rs().chain(rd).all(|r| warp.reg_ready[r] <= now) // scoreboard: RAW, WAW
-                // one memory op at a time per SM, for shared memory and for global memory.  A global
-                // op also waits for the warp's older stores, and a store for its older loads
-                && (!mem || if warp.ibuf[i].smem > 0 {
-                    smem_free
-                } else {
-                    gmem_free.max(warp.store_done).max(if u.is_store() { warp.load_done } else { 0 })
-                } <= now)
+                && Self::ready_at(warp, &warp.ibuf[i], smem_free, gmem_free) <= now
         })
     }
 
@@ -201,11 +213,25 @@ impl MuonCore {
         gmem: &mut FlatMemory,
         caches: &mut [Cache],
     ) -> Result<(), ExecErr> {
+        // asleep until `wake`: nothing a warp here waits on can complete before then
+        let awake = now >= self.wake;
         let active = self.scheduler.active_warp_mask();
-        for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
+        for w in (0..self.conf().num_warps).filter(|&w| awake && active.bit(w)) {
             self.refill(w, now, smem, gmem, caches)?;
         }
-        if let Some((wid, i)) = self.pick_warp(now, *smem_free, caches[self.l1].free) {
+        let (smem_now, gmem_now) = (*smem_free, caches[self.l1].free);
+        let picked = if awake { self.pick_warp(now, smem_now, gmem_now) } else { None };
+        if awake && picked.is_none() {
+            self.wake = (self.warps.iter())
+                .flat_map(|w| {
+                    let fetch = (w.fetch_ready != u64::MAX).then_some(w.fetch_ready);
+                    w.ibuf.iter().map(move |e| Self::ready_at(w, e, smem_now, gmem_now)).chain(fetch)
+                })
+                .filter(|&t| t > now)
+                .min()
+                .unwrap_or(u64::MAX);
+        }
+        if let Some((wid, i)) = picked {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.inst.unit() as usize] += 1;

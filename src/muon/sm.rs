@@ -112,6 +112,7 @@ impl SM {
                     (self.cores.iter_mut().flat_map(|core| &mut core.warps))
                         .filter(|w| w.fetch_ready == u64::MAX && w.cta() == id)
                         .for_each(|w| w.fetch_ready = now + 1);
+                    self.cores.iter_mut().for_each(|core| core.wake = 0);
                 }
             }
         }
