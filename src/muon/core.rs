@@ -31,8 +31,8 @@ pub struct MuonCore {
     pub trace: bool,
     pub stats: CoreStats, // accumulates across CTAs; not cleared by reset
     pub arrived: Option<CtaId>, // CTA of a warp that just issued a barrier
-    pub l0: usize, // this core's global memory cache
-    gmem_free: u64, // first cycle the L0 can take the next global memory op
+    pub l0: usize, // this core's instruction cache
+    pub l1: usize, // its SM's cache, the first level for data
 }
 
 impl MuonCore {
@@ -42,6 +42,7 @@ impl MuonCore {
         core_id: usize,
         logger: &Arc<Logger>,
         l0: usize,
+        l1: usize,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
@@ -70,7 +71,7 @@ impl MuonCore {
             stats: CoreStats::default(),
             arrived: None,
             l0,
-            gmem_free: 0,
+            l1,
         };
 
         info!(
@@ -127,17 +128,17 @@ impl MuonCore {
     }
 
     /// RTL-style single issue: the next warp, round-robin, with a ready ibuf entry
-    fn pick_warp(&mut self, now: u64, smem_free: u64) -> Option<(usize, usize)> {
+    fn pick_warp(&mut self, now: u64, smem_free: u64, gmem_free: u64) -> Option<(usize, usize)> {
         let n = self.conf().num_warps;
         let (wid, i) = (1..=n)
             .map(|k| (self.base.state.last_issued + k) % n)
-            .find_map(|w| self.ready_entry(w, now, smem_free).map(|i| (w, i)))?;
+            .find_map(|w| self.ready_entry(w, now, smem_free, gmem_free).map(|i| (w, i)))?;
         self.base.state.last_issued = wid;
         Some((wid, i))
     }
 
     /// oldest ibuf entry of warp `w` with no hazard on older entries and its registers ready at `now`
-    fn ready_entry(&self, w: usize, now: u64, smem_free: u64) -> Option<usize> {
+    fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64) -> Option<usize> {
         let warp = &self.warps[w];
         (0..warp.ibuf.len()).find(|&i| {
             let u = &warp.ibuf[i].inst;
@@ -150,22 +151,40 @@ impl MuonCore {
             (i == 0 || !u.is_control()) // control issues last
                 && !warp.ibuf.range(..i).any(|o| hazard(&o.inst))
                 && u.rs().chain(rd).all(|r| warp.reg_ready[r] <= now) // scoreboard: RAW, WAW
-                // one memory op at a time: per SM for shared memory, per core for global memory.  A global
+                // one memory op at a time per SM, for shared memory and for global memory.  A global
                 // op also waits for the warp's older stores, and a store for its older loads
                 && (!mem || if warp.ibuf[i].smem > 0 {
                     smem_free
                 } else {
-                    self.gmem_free.max(warp.store_done).max(if u.is_store() { warp.load_done } else { 0 })
+                    gmem_free.max(warp.store_done).max(if u.is_store() { warp.load_done } else { 0 })
                 } <= now)
         })
     }
 
     /// top up warp `wid`'s ibuf; non-control instructions execute as they are decoded
-    fn refill(&mut self, wid: usize, now: u64, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<(), ExecErr> {
+    fn refill(
+        &mut self,
+        wid: usize,
+        now: u64,
+        smem: &mut FlatMemory,
+        gmem: &mut FlatMemory,
+        caches: &mut [Cache],
+    ) -> Result<(), ExecErr> {
         while self.warps[wid].fetch_ready <= now
             && self.warps[wid].ibuf.len() < self.conf().ibuf_depth
             && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
         {
+            // entering a new line fetches it through the instruction cache; a miss stops the warp until
+            // the line arrives, and the warp then keeps the line even if the cache has replaced it
+            let line = self.scheduler.pc(wid) as u64 / self.conf().gmem.line as u64;
+            if line != self.warps[wid].fetched {
+                self.warps[wid].fetched = line;
+                let ready = cache::access(caches, self.l0, line, now, false).1;
+                if ready > now {
+                    self.warps[wid].fetch_ready = ready;
+                    break;
+                }
+            }
             let mut uop = self.warps[wid].frontend(self.scheduler.schedule(wid).unwrap(), gmem);
             uop.smem = if uop.inst.is_control() { 0 } else { self.exec(wid, uop, smem, gmem)? };
             self.warps[wid].ibuf.push_back(uop);
@@ -184,9 +203,9 @@ impl MuonCore {
     ) -> Result<(), ExecErr> {
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf().num_warps).filter(|&w| active.bit(w)) {
-            self.refill(w, now, smem, gmem)?;
+            self.refill(w, now, smem, gmem, caches)?;
         }
-        if let Some((wid, i)) = self.pick_warp(now, *smem_free) {
+        if let Some((wid, i)) = self.pick_warp(now, *smem_free, caches[self.l1].free) {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.inst.unit() as usize] += 1;
@@ -205,16 +224,16 @@ impl MuonCore {
                 *smem_free = now + uop.smem as u64 * self.conf().smem.per_bank_latency;
                 *smem_free + self.conf().smem.startup_latency
             } else if unit == Unit::Lsu {
-                // global memory: present each line to the L0 a cycle after it accepted the previous one
+                // global memory: present each line to the L1 a cycle after it accepted the previous one
                 let (mut t, mut ready) = (now, now);
                 let lines = self.warps[wid].gmem_lines.pop_front().unwrap();
                 self.stats.gmem_instrs += 1;
                 self.stats.gmem_reqs += lines.len() as u64;
                 for line in lines {
-                    let (accepted, data) = cache::access(caches, self.l0, line, t, uop.inst.is_store());
+                    let (accepted, data) = cache::access(caches, self.l1, line, t, uop.inst.is_store());
                     (t, ready) = (accepted + 1, ready.max(data));
                 }
-                self.gmem_free = t;
+                caches[self.l1].free = t;
                 let (warp, done) = (&mut self.warps[wid], ready + latency);
                 if uop.inst.is_store() { warp.store_done = done } else { warp.load_done = warp.load_done.max(done) }
                 done

@@ -17,6 +17,7 @@ pub struct Cache {
     lines: Vec<Line>,    // sets × ways, each set newest first
     mshrs: Vec<u64>,     // cycle each frees
     bus_free: u64,       // cycle the link to the next level frees
+    pub free: u64,       // first cycle it can take the next memory op from a core
     pub depth: usize,    // levels below this one before DRAM
     pub accesses: u64,
     pub misses: u64,
@@ -31,6 +32,7 @@ impl Cache {
             lines: vec![Line { tag: INVALID, ready: 0, dirty: false }; conf.sets * conf.ways],
             mshrs: vec![0; conf.mshrs],
             bus_free: 0,
+            free: 0,
             depth,
             accesses: 0,
             misses: 0,

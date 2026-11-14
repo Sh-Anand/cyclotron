@@ -19,13 +19,13 @@ pub struct SM {
 }
 
 impl SM {
-    /// `caches` holds every global memory cache; this adds the SM's L1 below `l2` and an L0 per core
+    /// `caches` holds every global memory cache; this adds the SM's L1 above `l2` and an L0 per core
     pub fn new(id: usize, config: MuonConfig, logger: &Arc<Logger>, caches: &mut Vec<Cache>, l2: usize) -> Self {
         let l1 = cache::add(caches, config.gmem.l1, Some(l2));
         let l0 = |caches: &mut Vec<Cache>| cache::add(caches, config.gmem.l0, Some(l1));
         SM {
             config,
-            cores: (0..config.num_cores).map(|i| MuonCore::new(Arc::new(config), id, i, logger, l0(caches))).collect(),
+            cores: (0..config.num_cores).map(|i| MuonCore::new(Arc::new(config), id, i, logger, l0(caches), l1)).collect(),
             smem: FlatMemory::new_with_size(config.smem_size, None),
             smem_free: 0,
             errs: vec![None; config.num_cores],

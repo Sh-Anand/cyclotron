@@ -65,7 +65,8 @@ pub struct CacheConfig {
     pub bus_cycles: u64,   // cycles a miss holds the link to the next level
 }
 
-/// Global memory: L0 per core, L1 per SM, L2 shared by all SMs and backed by DRAM
+/// Global memory: L0 per core for instructions, L1 per SM (the first level for data), L2 shared by
+/// all SMs and backed by DRAM
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(default)]
 pub struct GmemConfig {
@@ -80,7 +81,7 @@ impl Default for GmemConfig {
         let c = |sets, ways, mshrs, hit_latency, miss_latency, bus_cycles| CacheConfig {
             sets, ways, mshrs, hit_latency, miss_latency, bus_cycles,
         };
-        Self { line: 128, l0: c(64, 1, 4, 2, 9, 0), l1: c(128, 4, 8, 2, 9, 0), l2: c(512, 8, 8, 6, 40, 16) }
+        Self { line: 128, l0: c(64, 1, 4, 0, 9, 0), l1: c(128, 4, 8, 12, 30, 0), l2: c(512, 8, 8, 15, 80, 16) }
     }
 }
 

@@ -30,6 +30,7 @@ pub struct Warp {
     pub ibuf: VecDeque<MicroOp>, // decoded, not yet issued; all but a trailing control op already executed
     pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
     pub fetch_ready: u64,        // first cycle the ibuf may refill; u64::MAX while waiting at a barrier
+    pub fetched: u64,            // the instruction cache line it last fetched
     pub gmem_lines: VecDeque<Vec<u64>>, // per decoded, unissued global memory op: the lines it touches
     pub store_done: u64,         // cycle its last issued global store completes
     pub load_done: u64,          // cycle the last of its issued global loads completes
@@ -145,6 +146,7 @@ impl Warp {
             ibuf: VecDeque::new(),
             reg_ready: vec![0; config.num_regs],
             fetch_ready: 0,
+            fetched: u64::MAX,
             gmem_lines: VecDeque::new(),
             store_done: 0,
             load_done: 0,
