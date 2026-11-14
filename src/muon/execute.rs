@@ -7,7 +7,6 @@ use half::bf16;
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
-use phf::phf_map;
 use std::fmt::Debug;
 
 #[derive(Debug, Clone)]
@@ -69,19 +68,6 @@ macro_rules! f3_f7_mask {
     };
 }
 
-macro_rules! print_and_execute {
-    ($inst:expr, $operands:expr) => {{
-        $inst.1($operands)
-    }};
-}
-
-#[macro_export]
-macro_rules! print_and_unwrap {
-    ($inst:expr) => {{
-        $inst.1
-    }};
-}
-
 #[derive(Debug, FromPrimitive, Clone, Copy)]
 pub enum SFUType {
     TMC = 0,
@@ -103,12 +89,6 @@ pub enum CSRType {
     RSI = 6,
     RCI = 7,
 }
-
-#[derive(Debug)]
-pub struct InstImp<const N: usize>(pub &'static str, pub fn([u32; N]) -> u32);
-
-#[derive(Debug)]
-pub struct InstDef<T>(pub &'static str, pub T);
 
 #[derive(Debug)]
 pub struct ExecuteUnit;
@@ -134,64 +114,73 @@ impl ExecuteUnit {
             }
         }
 
-        static OP_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
-            0b000_0000000u16 => InstImp("add",    |[a, b]| { a.wrapping_add(b) }),
-            0b000_0100000u16 => InstImp("sub",    |[a, b]| { (a as i32).wrapping_sub(b as i32) as u32 }),
-            0b001_0000000u16 => InstImp("sll",    |[a, b]| { a << (b & 31) }),
-            0b010_0000000u16 => InstImp("slt",    |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }),
-            0b011_0000000u16 => InstImp("sltu",   |[a, b]| { if a < b { 1 } else { 0 } }),
-            0b100_0000000u16 => InstImp("xor",    |[a, b]| { a ^ b }),
-            0b101_0000000u16 => InstImp("srl",    |[a, b]| { a >> (b & 31) }),
-            0b101_0100000u16 => InstImp("sra",    |[a, b]| { ((a as i32) >> (b & 31)) as u32 }),
-            0b110_0000000u16 => InstImp("or",     |[a, b]| { a | b }),
-            0b111_0000000u16 => InstImp("and",    |[a, b]| { a & b }),
-            0b000_0000001u16 => InstImp("mul",    |[a, b]| { a.wrapping_mul(b) }),
-            0b001_0000001u16 => InstImp("mulh",   |[a, b]| { ((((a as i32) as i64).wrapping_mul((b as i32) as i64)) >> 32) as u32 }),
-            0b010_0000001u16 => InstImp("mulhsu", |[a, b]| { ((((a as i32) as i64).wrapping_mul((b as u64) as i64)) >> 32) as u32 }),
-            0b011_0000001u16 => InstImp("mulhu",  |[a, b]| { (((a as u64).wrapping_mul(b as u64)) >> 32) as u32 }),
-            0b100_0000001u16 => InstImp("div",    |[a, b]| { if check_zero(b) { u32::MAX } else { ((a as i32) / check_overflow(a, b as i32)) as u32 } }),
-            0b101_0000001u16 => InstImp("divu",   |[a, b]| { if check_zero(b) { u32::MAX } else { a / b } }),
-            0b110_0000001u16 => InstImp("rem",    |[a, b]| { if check_zero(b) { a } else { ((a as i32) % check_overflow(a, b as i32)) as u32 } }),
-            0b111_0000001u16 => InstImp("remu",   |[a, b]| { if check_zero(b) { a } else { a % b } }),
-        };
+        fn op_insts(key: u16) -> Option<fn([u32; 2]) -> u32> {
+            let op: fn([u32; 2]) -> u32 = match key {
+                0b000_0000000u16 => |[a, b]| { a.wrapping_add(b) }, // add
+                0b000_0100000u16 => |[a, b]| { (a as i32).wrapping_sub(b as i32) as u32 }, // sub
+                0b001_0000000u16 => |[a, b]| { a << (b & 31) }, // sll
+                0b010_0000000u16 => |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }, // slt
+                0b011_0000000u16 => |[a, b]| { if a < b { 1 } else { 0 } }, // sltu
+                0b100_0000000u16 => |[a, b]| { a ^ b }, // xor
+                0b101_0000000u16 => |[a, b]| { a >> (b & 31) }, // srl
+                0b101_0100000u16 => |[a, b]| { ((a as i32) >> (b & 31)) as u32 }, // sra
+                0b110_0000000u16 => |[a, b]| { a | b }, // or
+                0b111_0000000u16 => |[a, b]| { a & b }, // and
+                0b000_0000001u16 => |[a, b]| { a.wrapping_mul(b) }, // mul
+                0b001_0000001u16 => |[a, b]| { ((((a as i32) as i64).wrapping_mul((b as i32) as i64)) >> 32) as u32 }, // mulh
+                0b010_0000001u16 => |[a, b]| { ((((a as i32) as i64).wrapping_mul((b as u64) as i64)) >> 32) as u32 }, // mulhsu
+                0b011_0000001u16 => |[a, b]| { (((a as u64).wrapping_mul(b as u64)) >> 32) as u32 }, // mulhu
+                0b100_0000001u16 => |[a, b]| { if check_zero(b) { u32::MAX } else { ((a as i32) / check_overflow(a, b as i32)) as u32 } }, // div
+                0b101_0000001u16 => |[a, b]| { if check_zero(b) { u32::MAX } else { a / b } }, // divu
+                0b110_0000001u16 => |[a, b]| { if check_zero(b) { a } else { ((a as i32) % check_overflow(a, b as i32)) as u32 } }, // rem
+                0b111_0000001u16 => |[a, b]| { if check_zero(b) { a } else { a % b } }, // remu
+                _ => return None,
+            };
+            Some(op)
+        }
 
-        static OPIMM_F3_INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
-            0u8 => InstImp("addi",  |[a, b]| { a.wrapping_add(b) }),
-            2u8 => InstImp("slti",  |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }),
-            3u8 => InstImp("sltiu", |[a, b]| { if a < b { 1 } else { 0 } }),
-            4u8 => InstImp("xori",  |[a, b]| { a ^ b }),
-            6u8 => InstImp("ori",   |[a, b]| { a | b }),
-            7u8 => InstImp("andi",  |[a, b]| { a & b }),
-        };
+        fn opimm_f3_insts(key: u8) -> Option<fn([u32; 2]) -> u32> {
+            let op: fn([u32; 2]) -> u32 = match key {
+                0u8 => |[a, b]| { a.wrapping_add(b) }, // addi
+                2u8 => |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }, // slti
+                3u8 => |[a, b]| { if a < b { 1 } else { 0 } }, // sltiu
+                4u8 => |[a, b]| { a ^ b }, // xori
+                6u8 => |[a, b]| { a | b }, // ori
+                7u8 => |[a, b]| { a & b }, // andi
+                _ => return None,
+            };
+            Some(op)
+        }
 
-        static OPIMM_F3F7_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
-            0b001_0000000u16 => InstImp("slli", |[a, b]| { a << (b & 31) }),
-            0b101_0000000u16 => InstImp("srli", |[a, b]| { a >> (b & 31) }),
-            0b101_0100000u16 => InstImp("srai", |[a, b]| { ((a as i32) >> (b & 31)) as u32 }),
-        };
+        fn opimm_f3f7_insts(key: u16) -> Option<fn([u32; 2]) -> u32> {
+            let op: fn([u32; 2]) -> u32 = match key {
+                0b001_0000000u16 => |[a, b]| { a << (b & 31) }, // slli
+                0b101_0000000u16 => |[a, b]| { a >> (b & 31) }, // srli
+                0b101_0100000u16 => |[a, b]| { ((a as i32) >> (b & 31)) as u32 }, // srai
+                _ => return None,
+            };
+            Some(op)
+        }
 
-        static AUIPC: InstImp<2> = InstImp("auipc", |[a, b]| a.wrapping_add(b));
-        static LUI: InstImp<2> = InstImp("lui", |[a, _]| a << 12);
-
-        let imp = match issued.opcode {
-            Opcode::OP => OP_INSTS.get(&(f3_f7_mask!(issued.f3, issued.f7))),
-            Opcode::OP_IMM => OPIMM_F3_INSTS
-                .get(&issued.f3)
-                .or_else(|| OPIMM_F3F7_INSTS.get(&(f3_f7_mask!(issued.f3, issued.f7)))),
-            Opcode::AUIPC => Some(&AUIPC),
-            Opcode::LUI => Some(&LUI),
+        let op: Option<fn([u32; 2]) -> u32> = match issued.opcode {
+            Opcode::OP => op_insts(f3_f7_mask!(issued.f3, issued.f7)),
+            Opcode::OP_IMM => {
+                opimm_f3_insts(issued.f3).or_else(|| opimm_f3f7_insts(f3_f7_mask!(issued.f3, issued.f7)))
+            }
+            Opcode::AUIPC => Some(|[a, b]| a.wrapping_add(b)),
+            Opcode::LUI => Some(|[a, _]| a << 12),
             _ => panic!("unreachable"),
         };
 
         move |lane| {
-            imp.map(|imp| {
+            op.map(|op| {
                 let operands = match issued.opcode {
                     Opcode::OP => [issued.rs1_data[lane].unwrap(), issued.rs2_data[lane].unwrap()],
                     Opcode::OP_IMM => [issued.rs1_data[lane].unwrap(), issued.imm32],
                     Opcode::AUIPC => [issued.pc, issued.imm32],
                     _ => [issued.imm32, 0], // LUI
                 };
-                print_and_execute!(imp, operands)
+                op(operands)
             })
         }
     }
@@ -316,120 +305,113 @@ impl ExecuteUnit {
             (1 << conds.iter().position(|&c| c).unwrap()) as u32
         }
 
-        static OPFP_F3F7_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
-            0b000_0010000u16 => InstImp("fsgnj.s",  |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }),
-            0b001_0010000u16 => InstImp("fsgnjn.s", |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }),
-            0b010_0010000u16 => InstImp("fsgnjx.s", |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
-            0b000_0010100u16 => InstImp("fmin.s",   |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, true) }) }),
-            0b001_0010100u16 => InstImp("fmax.s",   |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, false) }) }),
-            0b000_0010110u16 => InstImp("fmin.h",   |[a, b]| { bf16_op(a, b, |x, y| { if x.to_f32() < y.to_f32() { x } else { y } }) }),
-            0b001_0010110u16 => InstImp("fmax.h",   |[a, b]| { bf16_op(a, b, |x, y| { if x.to_f32() > y.to_f32() { x } else { y } }) }),
-            0b010_1010000u16 => InstImp("feq.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x == y }) }),
-            0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x < y }) }),
-            0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x <= y }) }),
-            0b001_1110000u16 => InstImp("fclass.s", |[a, _b]| { fp32_fclass(a) }),
-        };
+        fn opfp_f3f7_insts(key: u16) -> Option<fn([u32; 2]) -> u32> {
+            let op: fn([u32; 2]) -> u32 = match key {
+                0b000_0010000u16 => |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }, // fsgnj.s
+                0b001_0010000u16 => |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }, // fsgnjn.s
+                0b010_0010000u16 => |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }, // fsgnjx.s
+                0b000_0010100u16 => |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, true) }) }, // fmin.s
+                0b001_0010100u16 => |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, false) }) }, // fmax.s
+                0b000_0010110u16 => |[a, b]| { bf16_op(a, b, |x, y| { if x.to_f32() < y.to_f32() { x } else { y } }) }, // fmin.h
+                0b001_0010110u16 => |[a, b]| { bf16_op(a, b, |x, y| { if x.to_f32() > y.to_f32() { x } else { y } }) }, // fmax.h
+                0b010_1010000u16 => |[a, b]| { fp32_cmp_op(a, b, |x, y| { x == y }) }, // feq.s
+                0b001_1010000u16 => |[a, b]| { fp32_cmp_op(a, b, |x, y| { x < y }) }, // flt.s
+                0b000_1010000u16 => |[a, b]| { fp32_cmp_op(a, b, |x, y| { x <= y }) }, // fle.s
+                0b001_1110000u16 => |[a, _b]| { fp32_fclass(a) }, // fclass.s
+                _ => return None,
+            };
+            Some(op)
+        }
 
-        static OPFP_F7_FP32_INSTS: phf::Map<u8, InstImp<4>> = phf_map! {
-            0b0000000u8 => InstImp("fadd.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x + y }) }),
-            0b0000100u8 => InstImp("fsub.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x - y }) }),
-            0b0001000u8 => InstImp("fmul.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x * y }) }),
-            0b0001100u8 => InstImp("fdiv.s",   |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x / y }) }),
-            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, _y| { x.sqrt() }) }),
-            0b1100000u8 => InstImp("fcvt.*.s", |[a, _b, rs2_addr, rm]| { fp32_fcvt_saturate(a, rs2_addr > 0, rm) }),
-            0b1101000u8 => InstImp("fcvt.s.*", |[a, _b, rs2_addr, _rm]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
-        };
+        fn opfp_f7_fp32_insts(key: u8) -> Option<fn([u32; 4]) -> u32> {
+            let op: fn([u32; 4]) -> u32 = match key {
+                0b0000000u8 => |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x + y }) }, // fadd.s
+                0b0000100u8 => |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x - y }) }, // fsub.s
+                0b0001000u8 => |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x * y }) }, // fmul.s
+                0b0001100u8 => |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, y| { x / y }) }, // fdiv.s
+                0b0101100u8 => |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, _y| { x.sqrt() }) }, // fsqrt.s
+                0b1100000u8 => |[a, _b, rs2_addr, rm]| { fp32_fcvt_saturate(a, rs2_addr > 0, rm) }, // fcvt.*.s
+                0b1101000u8 => |[a, _b, rs2_addr, _rm]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }, // fcvt.s.*
+                _ => return None,
+            };
+            Some(op)
+        }
 
-        static OPFP_F7_BF16_INSTS: phf::Map<u8, InstImp<4>> = phf_map! {
-            0b0000000u8 => InstImp("fadd.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x + y }) }),
-            0b0000100u8 => InstImp("fsub.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x - y }) }),
-            0b0001000u8 => InstImp("fmul.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x * y }) }),
-            0b0001100u8 => InstImp("fdiv.h",  |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x / y }) }),
-            0b0101100u8 => InstImp("fsqrt.h", |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, _y| { bf16::from_f32(x.to_f32().sqrt()) }) }),
-        };
+        fn opfp_f7_bf16_insts(key: u8) -> Option<fn([u32; 4]) -> u32> {
+            let op: fn([u32; 4]) -> u32 = match key {
+                0b0000000u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x + y }) }, // fadd.h
+                0b0000100u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x - y }) }, // fsub.h
+                0b0001000u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x * y }) }, // fmul.h
+                0b0001100u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x / y }) }, // fdiv.h
+                0b0101100u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, _y| { bf16::from_f32(x.to_f32().sqrt()) }) }, // fsqrt.h
+                _ => return None,
+            };
+            Some(op)
+        }
 
         let fmt = issued_inst.f7 & 0b11;
         let f7_base = issued_inst.f7 & !0b11;
         let rd_data = match issued_inst.opcode {
-            Opcode::OP_FP => OPFP_F3F7_INSTS
-                .get(&(f3_f7_mask!(issued_inst.f3, issued_inst.f7)))
-                .and_then(|imp| {
-                    Some(print_and_execute!(
-                        imp,
-                        [
+            Opcode::OP_FP => opfp_f3f7_insts(f3_f7_mask!(issued_inst.f3, issued_inst.f7))
+                .map(|op| op([issued_inst.rs1_data[lane].unwrap(), issued_inst.rs2_data[lane].unwrap()]))
+                .or_else(|| {
+                    let op = if fmt == 0b10 { opfp_f7_bf16_insts(f7_base) } else { opfp_f7_fp32_insts(f7_base) };
+                    op.map(|op| {
+                        op([
                             issued_inst.rs1_data[lane].unwrap(),
                             issued_inst.rs2_data[lane].unwrap(),
-                        ]
-                    ))
-                })
-                .or_else(|| {
-                    let opfp_f7_insts = if fmt == 0b10 {
-                        &OPFP_F7_BF16_INSTS
-                    } else {
-                        &OPFP_F7_FP32_INSTS
-                    };
-                    opfp_f7_insts.get(&f7_base).and_then(|imp| {
-                        Some(print_and_execute!(
-                            imp,
-                            [
-                                issued_inst.rs1_data[lane].unwrap(),
-                                issued_inst.rs2_data[lane].unwrap(),
-                                issued_inst.rs2_addr as u32,
-                                issued_inst.f3 as u32
-                            ]
-                        ))
+                            issued_inst.rs2_addr as u32,
+                            issued_inst.f3 as u32,
+                        ])
                     })
                 }),
             Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
-                let imp = if fmt == 0b10 {
+                let op: fn([u32; 3]) -> u32 = if fmt == 0b10 {
                     match issued_inst.opcode {
-                        Opcode::MADD => InstImp("fmadd.h", |[a, b, c]| {
+                        Opcode::MADD => |[a, b, c]| {
                             bf16_op_3(a, b, c, |x, y, z| {
                                 bf16::from_f32(x.to_f32().mul_add(y.to_f32(), z.to_f32()))
                             })
-                        }),
-                        Opcode::MSUB => InstImp("fmsub.h", |[a, b, c]| {
+                        },
+                        Opcode::MSUB => |[a, b, c]| {
                             bf16_op_3(a, b, c, |x, y, z| {
                                 bf16::from_f32(x.to_f32().mul_add(y.to_f32(), -z.to_f32()))
                             })
-                        }),
-                        Opcode::NM_ADD => InstImp("fnmadd.h", |[a, b, c]| {
+                        },
+                        Opcode::NM_ADD => |[a, b, c]| {
                             bf16_op_3(a, b, c, |x, y, z| {
                                 bf16::from_f32((-x.to_f32()).mul_add(y.to_f32(), -z.to_f32()))
                             })
-                        }),
-                        Opcode::NM_SUB => InstImp("fnmsub.h", |[a, b, c]| {
+                        },
+                        Opcode::NM_SUB => |[a, b, c]| {
                             bf16_op_3(a, b, c, |x, y, z| {
                                 bf16::from_f32((-x.to_f32()).mul_add(y.to_f32(), z.to_f32()))
                             })
-                        }),
+                        },
                         _ => panic!(),
                     }
                 } else {
                     match issued_inst.opcode {
-                        Opcode::MADD => InstImp("fmadd.s", |[a, b, c]| {
+                        Opcode::MADD => |[a, b, c]| {
                             fp32_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, z))
-                        }),
-                        Opcode::MSUB => InstImp("fmsub.s", |[a, b, c]| {
+                        },
+                        Opcode::MSUB => |[a, b, c]| {
                             fp32_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, -z))
-                        }),
-                        Opcode::NM_ADD => InstImp("fnmadd.s", |[a, b, c]| {
+                        },
+                        Opcode::NM_ADD => |[a, b, c]| {
                             fp32_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, -z))
-                        }),
-                        Opcode::NM_SUB => InstImp("fnmsub.s", |[a, b, c]| {
+                        },
+                        Opcode::NM_SUB => |[a, b, c]| {
                             fp32_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, z))
-                        }),
+                        },
                         _ => panic!(),
                     }
                 };
-                Some(print_and_execute!(
-                    imp,
-                    [
-                        issued_inst.rs1_data[lane].unwrap(),
-                        issued_inst.rs2_data[lane].unwrap(),
-                        issued_inst.rs3_data[lane].unwrap(),
-                    ]
-                ))
+                Some(op([
+                    issued_inst.rs1_data[lane].unwrap(),
+                    issued_inst.rs2_data[lane].unwrap(),
+                    issued_inst.rs3_data[lane].unwrap(),
+                ]))
             }
             _ => {
                 panic!("unreachable");
@@ -445,48 +427,26 @@ impl ExecuteUnit {
         let rs2 = issued_inst.rs2_data[lane].unwrap();
         let branch_offset = issued_inst.imm32;
         let branch_target = issued_inst.pc.wrapping_add(branch_offset);
-        static INSTS: phf::Map<u8, InstDef<fn([u32; 2]) -> bool>> = phf_map! {
-            0b000u8 => InstDef("beq",  |[a, b]| a == b),
-            0b001u8 => InstDef("bne",  |[a, b]| a != b),
-            0b100u8 => InstDef("blt",  |[a, b]| (a as i32) < (b as i32)),
-            0b101u8 => InstDef("bge",  |[a, b]| (a as i32) >= (b as i32)),
-            0b110u8 => InstDef("bltu", |[a, b]| a < b),
-            0b111u8 => InstDef("bgeu", |[a, b]| a >= b),
+        let taken = match issued_inst.f3 {
+            0b000 => rs1 == rs2,                   // beq
+            0b001 => rs1 != rs2,                   // bne
+            0b100 => (rs1 as i32) < (rs2 as i32),  // blt
+            0b101 => (rs1 as i32) >= (rs2 as i32), // bge
+            0b110 => rs1 < rs2,                    // bltu
+            0b111 => rs1 >= rs2,                   // bgeu
+            _ => panic!("unimplemented branch instruction"),
         };
-        let taken = INSTS
-            .get(&issued_inst.f3)
-            .and_then(|imp| Some(print_and_execute!(imp, [rs1, rs2])))
-            .expect("unimplemented branch instruction");
         taken.then_some(branch_target)
     }
 
     fn load(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
         let key = (issued_inst.f3, issued_inst.opext);
         let shared_load = issued_inst.opext == 1;
-        // plain match, not a hash lookup: this runs once per lane
-        let mnemonic = match key {
-            (0, 0) => "lb.global",
-            (0, 1) => "lb.shared",
-            (1, 0) => "lh.global",
-            (1, 1) => "lh.shared",
-            (2, 0) => "lw.global",
-            (2, 1) => "lw.shared",
-            (3, 0) => "ld.global",
-            (3, 1) => "ld.shared",
-            (4, 0) => "lbu.global",
-            (4, 1) => "lbu.shared",
-            (5, 0) => "lhu.global",
-            (5, 1) => "lhu.shared",
-            (6, 0) => "lwu.global",
-            (6, 1) => "lwu.shared",
-            _ => unimplemented!("unknown load instruction"),
-        };
-
-        let inst_imp = InstImp(mnemonic, |[a, b]| a.wrapping_add(b));
-        let alu_result = print_and_execute!(
-            inst_imp,
-            [issued_inst.rs1_data[lane].unwrap(), issued_inst.imm32]
-        );
+        // lb, lh, lw, ld, lbu, lhu, lwu; .global or .shared
+        if !matches!(key, (0..=6, 0 | 1)) {
+            unimplemented!("unknown load instruction")
+        }
+        let alu_result = issued_inst.rs1_data[lane].unwrap().wrapping_add(issued_inst.imm32);
 
         let logsize = issued_inst.f3 & 3;
         let size = 1u32 << logsize;
@@ -508,22 +468,11 @@ impl ExecuteUnit {
     fn store(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
         let key = (issued_inst.f3, issued_inst.opext);
         let shared_store = issued_inst.opext == 1;
-        // plain match, not a hash lookup: this runs once per lane
-        let mnemonic = match key {
-            (0, 0) => "sb.global",
-            (0, 1) => "sb.shared",
-            (1, 0) => "sh.global",
-            (1, 1) => "sh.shared",
-            (2, 0) => "sw.global",
-            (2, 1) => "sw.shared",
-            _ => unimplemented!("unknown store instruction"),
-        };
-
-        let inst_imp = InstImp(mnemonic, |[a, b]| a.wrapping_add(b));
-        let alu_result = print_and_execute!(
-            inst_imp,
-            [issued_inst.rs1_data[lane].unwrap(), issued_inst.imm32]
-        );
+        // sb, sh, sw; .global or .shared
+        if !matches!(key, (0..=2, 0 | 1)) {
+            unimplemented!("unknown store instruction")
+        }
+        let alu_result = issued_inst.rs1_data[lane].unwrap().wrapping_add(issued_inst.imm32);
 
         let addr = alu_result;
         let data = issued_inst.rs2_data[lane].unwrap();
@@ -569,15 +518,15 @@ impl ExecuteUnit {
         csrf: &mut CSRFile,
         active_warps: u32,
     ) -> Vec<Option<u32>> {
-        let csr_type = print_and_unwrap!(match issued_inst.f3 {
-            1 => InstDef("csrrw", CSRType::RW),
-            2 => InstDef("csrrs", CSRType::RS),
-            3 => InstDef("csrrc", CSRType::RC),
-            5 => InstDef("csrrwi", CSRType::RWI),
-            6 => InstDef("csrrsi", CSRType::RSI),
-            7 => InstDef("csrrci", CSRType::RCI),
+        let csr_type = match issued_inst.f3 {
+            1 => CSRType::RW,  // csrrw
+            2 => CSRType::RS,  // csrrs
+            3 => CSRType::RC,  // csrrc
+            5 => CSRType::RWI, // csrrwi
+            6 => CSRType::RSI, // csrrsi
+            7 => CSRType::RCI, // csrrci
             _ => panic!("unimplemented"),
-        });
+        };
         let first_lid = tmask.trailing_zeros() as usize;
         let operand = match csr_type {
             CSRType::RW | CSRType::RS | CSRType::RC => issued_inst.rs1_data[first_lid].unwrap(),
@@ -607,30 +556,24 @@ impl ExecuteUnit {
         rf: &mut [RegFile],
         scheduler: &mut Scheduler,
     ) {
-        let insts = phf_map! {
-            // sets thread mask to rs1[NT-1:0]
-            0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
-            // spawns rs1 warps, except the executing warp, and set their pc's to rs2
-            0b001_0000000u16 => InstDef("vx_wspawn",SFUType::WSPAWN),
-            // collect rs1[0] for then mask. set tmc, push else mask to ipdom. skip pushing else mask when non-divergent
-            0b010_0000000u16 => InstDef("vx_split", SFUType::SPLIT),
-            // pop ipdom and set tmc
-            0b011_0000000u16 => InstDef("vx_join",  SFUType::JOIN),
-            // rs1 indicates barrier id, rs2 indicates num warps participating in each core
-            0b100_0000000u16 => InstDef("vx_bar",   SFUType::BAR),
-            // sets thread mask to current tmask & then_mask, same rules as split. if no lanes take branch, set mask to rs2.
-            0b101_0000000u16 => InstDef("vx_pred",  SFUType::PRED),
-            // 0b000_0000001u16 => InstDef("vx_rast",  SFUType::),
-            // signals the result of a test, used only for isa tests
-        };
-        let tohost_inst = InstDef("tohost", SFUType::ECALL);
         let sfu_type = if issued_inst.opcode == Opcode::SYSTEM {
-            print_and_unwrap!(tohost_inst)
+            SFUType::ECALL // tohost: signals the result of a test, used only for isa tests
         } else {
-            insts
-                .get(&(f3_f7_mask!(issued_inst.f3, issued_inst.f7)))
-                .and_then(|imp| Some(print_and_unwrap!(imp)))
-                .expect("unimplemented sfu instruction")
+            match f3_f7_mask!(issued_inst.f3, issued_inst.f7) {
+                // sets thread mask to rs1[NT-1:0]
+                0b000_0000000 => SFUType::TMC,
+                // spawns rs1 warps, except the executing warp, and set their pc's to rs2
+                0b001_0000000 => SFUType::WSPAWN,
+                // collect rs1[0] for then mask. set tmc, push else mask to ipdom. skip pushing else mask when non-divergent
+                0b010_0000000 => SFUType::SPLIT,
+                // pop ipdom and set tmc
+                0b011_0000000 => SFUType::JOIN,
+                // rs1 indicates barrier id, rs2 indicates num warps participating in each core
+                0b100_0000000 => SFUType::BAR,
+                // sets thread mask to current tmask & then_mask, same rules as split. if no lanes take branch, set mask to rs2.
+                0b101_0000000 => SFUType::PRED,
+                _ => panic!("unimplemented sfu instruction"),
+            }
         };
 
         scheduler.sfu(
@@ -648,27 +591,15 @@ impl ExecuteUnit {
     }
 
     pub fn custom3(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
-        let insts = phf_map! {
-            0b111_0101110u16 => InstImp("fexp.h", |[a]| {
-                let result = bf16::from_f32(bf16::from_bits((a & 0xffff) as u16).to_f32().exp())
-                    .to_bits();
-                if [0xffc0, 0x7fff, 0xffff].contains(&result) {
-                    0x7fc0
-                } else {
-                    sign_ext::<16>(result as u32) as u32
-                }
-            }),
-        };
-
-        insts
-            .get(&(f3_f7_mask!(issued_inst.f3, issued_inst.f7)))
-            .and_then(|imp| {
-                Some(print_and_execute!(
-                    imp,
-                    [issued_inst.rs1_data[lane].unwrap()]
-                ))
-            })
-            .or_else(|| panic!("unimplemented custom3 instruction"))
+        match f3_f7_mask!(issued_inst.f3, issued_inst.f7) {
+            // fexp.h
+            0b111_0101110 => {
+                let a = issued_inst.rs1_data[lane].unwrap();
+                let result = bf16::from_f32(bf16::from_bits((a & 0xffff) as u16).to_f32().exp()).to_bits();
+                Some(if [0xffc0, 0x7fff, 0xffff].contains(&result) { 0x7fc0 } else { sign_ext::<16>(result as u32) as u32 })
+            }
+            _ => panic!("unimplemented custom3 instruction"),
+        }
     }
 
     /// Collect source operand values from the regfile.
@@ -784,13 +715,10 @@ impl ExecuteUnit {
                 Self::collect_lanes(|lane| ExecuteUnit::amo(&issued, lane), tmask, rf),
             ),
             Opcode::MISC_MEM => {
-                let imp = match issued.f3 {
-                    0 => InstDef("fence", 0),
-                    1 => InstDef("fence.i", 1),
-                    2 => InstDef("fence.s", 2),
-                    _ => panic!("unimplemented"),
-                };
-                print_and_unwrap!(imp);
+                // fence, fence.i, fence.s
+                if issued.f3 > 2 {
+                    panic!("unimplemented")
+                }
                 // TODO fence
                 (empty, empty_mem)
             }
@@ -812,9 +740,7 @@ impl ExecuteUnit {
                 (empty, empty_mem)
             }
             Opcode::CUSTOM1 => {
-                // 0b000_0000000u16 => InstImp("vx_tex",  |[a, b, c]| { }),
-                // 0b001_0000000u16 => InstImp("vx_cmov", |[a, b, c]| { }),
-                // 0b001_0000001u16 => InstImp("vx_rop",  |[a, b, c]| { }),
+                // vx_tex, vx_cmov, vx_rop
                 todo!("graphics ops unimplemented")
             }
             Opcode::CUSTOM2 => {
