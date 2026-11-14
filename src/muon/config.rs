@@ -125,7 +125,7 @@ impl Default for UnitsConfig {
         let u = |lanes, latency| UnitConfig { lanes, latency };
         Self {
             alu: u(32, 3),         // rocket ALU, recomposer register
-            mul: u(32, 36),        // rocket MulDiv, mulUnroll = 1: 32 iterations + 2
+            mul: u(32, 4),         // a pipelined multiplier; the RTL's iterative one takes 36
             div: u(32, 37),        // rocket MulDiv, divUnroll = 1: 32 iterations + sign fixup + 2
             fp: u(16, 5),          // CVFPU addmul/noncomp/conv: 2 pipe regs + recomposer
             fp_divsqrt: u(4, 16),  // CVFPU PULP divsqrt, 3 iteration units: ~9 iterations + pre/post + 2 pipe regs
