@@ -1,6 +1,4 @@
-use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
-use crate::base::module::{module, IsModule, ModuleBase};
 use crate::info;
 use crate::muon::config::MuonConfig;
 use crate::muon::core::CtaId;
@@ -16,14 +14,10 @@ use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-#[derive(Debug, Default)]
-pub struct WarpState {
-    pub reg_file: Vec<RegFile>,
-    pub csr_file: CSRFile,
-}
-
 pub struct Warp {
-    pub base: ModuleBase<WarpState, MuonConfig>,
+    conf: MuonConfig,
+    pub reg_file: Vec<RegFile>, // per lane
+    pub csr_file: CSRFile,
     pub wid: usize,
     pub ibuf: VecDeque<MicroOp>, // decoded, not yet issued; all but a trailing control op already executed
     pub reg_ready: Vec<u64>,     // cycle each register's pending write lands
@@ -36,10 +30,10 @@ pub struct Warp {
     logger: Arc<Logger>,
 }
 
-impl ModuleBehaviors for Warp {
-    fn reset(&mut self) {
-        self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
-        self.state_mut().csr_file.reset();
+impl Warp {
+    pub fn reset(&mut self) {
+        self.reg_file.iter_mut().for_each(|x| x.reset());
+        self.csr_file.reset();
         self.ibuf.clear();
         self.reg_ready.fill(0);
         self.fetch_ready = 0;
@@ -47,8 +41,6 @@ impl ModuleBehaviors for Warp {
         (self.store_done, self.load_done) = (0, 0);
     }
 }
-
-module!(Warp, WarpState, MuonConfig,);
 
 /// What the execute stage produced: rd data per lane, and the memory requests still to serve.
 #[derive(Debug)]
@@ -92,21 +84,11 @@ pub struct ExecErr {
 }
 
 impl Warp {
-    pub fn new(
-        config: Arc<MuonConfig>,
-        logger: &Arc<Logger>,
-    ) -> Warp {
-        let num_lanes = config.num_lanes;
-        let mut me = Warp {
-            base: ModuleBase {
-                state: WarpState {
-                    reg_file: (0..num_lanes)
-                        .map(|i| RegFile::new(config.clone(), i))
-                        .collect(),
-                    csr_file: CSRFile::new(*config),
-                },
-                ..ModuleBase::default()
-            },
+    pub fn new(config: MuonConfig, logger: &Arc<Logger>) -> Warp {
+        Warp {
+            conf: config,
+            reg_file: (0..config.num_lanes).map(|_| RegFile::new(config.num_regs)).collect(),
+            csr_file: CSRFile::new(config),
             wid: config.lane_config.warp_id,
             ibuf: VecDeque::new(),
             reg_ready: vec![0; config.num_regs],
@@ -117,9 +99,7 @@ impl Warp {
             load_done: 0,
             regs: 0,
             logger: logger.clone(),
-        };
-        me.init_conf(config);
-        me
+        }
     }
 
     pub fn frontend(&mut self, schedule: Schedule, gmem: &FlatMemory) -> MicroOp {
@@ -140,19 +120,18 @@ impl Warp {
         gmem: &mut FlatMemory,
     ) -> Result<Vec<MemAccess>, ExecErr> {
         let (pc, tmask, wid) = (uop.inst.pc, uop.tmask, self.wid);
-        assert!(scheduler.state().thread_masks[wid] == tmask, "scheduler tmask was not set correctly");
+        assert!(scheduler.state.thread_masks[wid] == tmask, "scheduler tmask was not set correctly");
 
-        let core_id = self.conf().lane_config.core_id;
-        let state = &mut self.base.state;
-        let issued = ExecuteUnit::collect(&uop, &state.reg_file);
+        let core_id = self.conf.lane_config.core_id;
+        let issued = ExecuteUnit::collect(&uop, &self.reg_file);
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let ex = ExecuteUnit::execute(issued, core_id, wid, tmask, &mut state.reg_file, &mut state.csr_file, scheduler);
+            let ex = ExecuteUnit::execute(issued, core_id, wid, tmask, &mut self.reg_file, &mut self.csr_file, scheduler);
             Self::mem(ex, smem, gmem)
         }));
 
         match result {
             Ok((rd_addr, rd_data, accesses)) => {
-                for (lrf, ldata) in zip(&mut state.reg_file, rd_data) {
+                for (lrf, ldata) in zip(&mut self.reg_file, rd_data) {
                     ldata.map(|data| lrf.write_gpr(rd_addr, data));
                 }
                 info!(self.logger, "[core {} warp {}] PC=0x{:08x}, rd={:3}", core_id, wid, pc, rd_addr);
@@ -237,7 +216,7 @@ impl Warp {
     }
 
     pub fn cta(&self) -> CtaId {
-        let csrs = &self.base.state.csr_file;
+        let csrs = &self.csr_file;
         (csrs.cmd_id, csrs.block_idx)
     }
 
@@ -250,7 +229,7 @@ impl Warp {
         cmd_id: u64,
     ) {
         assert!(thread_idxs.len() > 0);
-        self.base.state.csr_file.set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
+        self.csr_file.set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
     }
 
 }

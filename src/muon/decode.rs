@@ -1,12 +1,9 @@
 extern crate num;
 
-use crate::base::behavior::*;
-use crate::base::module::{module, IsModule, ModuleBase};
-use crate::muon::config::{MuonConfig, Unit};
+use crate::muon::config::Unit;
 use crate::muon::execute::Opcode;
 use crate::utils::*;
 use std::fmt::{Debug, Display, Formatter};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HasRegs {
@@ -256,67 +253,35 @@ pub fn sign_ext<const W: u8>(from: u32) -> i32 {
     ((from << (32 - W)) as i32) >> (32 - W)
 }
 
-#[derive(Debug)]
-pub struct RegFileState {
-    gpr: [u32; 256],
-}
-
-impl Default for RegFileState {
-    fn default() -> Self {
-        Self { gpr: [0u32; 256] }
-    }
-}
-
 /// Register file for a single SIMT lane.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RegFile {
-    base: ModuleBase<RegFileState, MuonConfig>,
-    lane_id: usize,
+    gpr: [u32; 256],
+    num_regs: usize,
 }
-
-impl ModuleBehaviors for RegFile {
-    fn reset(&mut self) {
-        self.base.state.gpr.fill(0u32);
-        // let gtid = self.conf().num_lanes * self.conf().num_warps *
-        //     self.conf().lane_config.core_id +
-        //     self.conf().num_lanes * self.conf().lane_config.warp_id +
-        //     self.lane_id;
-
-        // this should be set by program preamble
-        // self.base.state.gpr[2] = 0xffff0000u32 - (0x100000u32 * gtid as u32); // sp
-    }
-}
-
-module!(RegFile, RegFileState, MuonConfig,);
 
 impl RegFile {
-    pub fn new(config: Arc<MuonConfig>, lid: usize) -> RegFile {
-        let mut me = RegFile::default();
-        assert!(
-            config.num_regs <= 256,
-            "currently at most 256 regs due to addr size"
-        );
-        me.init_conf(config);
-        me.lane_id = lid;
-        me
+    pub fn new(num_regs: usize) -> RegFile {
+        assert!(num_regs <= 256, "currently at most 256 regs due to addr size");
+        RegFile { gpr: [0; 256], num_regs }
+    }
+
+    pub fn reset(&mut self) {
+        self.gpr.fill(0);
     }
 
     pub fn read_gpr(&self, addr: u8) -> u32 {
         if addr == 0 {
             0u32
         } else {
-            self.base.state.gpr[addr as usize]
+            self.gpr[addr as usize]
         }
     }
 
     pub fn write_gpr(&mut self, addr: u8, data: u32) {
-        assert!(
-            (addr as usize) < self.conf().num_regs,
-            "invalid gpr value {}",
-            addr
-        );
+        assert!((addr as usize) < self.num_regs, "invalid gpr value {}", addr);
         if addr > 0 {
-            self.base.state.gpr[addr as usize] = data;
+            self.gpr[addr as usize] = data;
         }
     }
 }

@@ -1,4 +1,3 @@
-use crate::base::{behavior::*, module::*};
 use crate::muon::cache::{self, Cache};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig, Unit};
@@ -11,16 +10,12 @@ use crate::sim::log::Logger;
 use crate::utils::BitSlice;
 use std::sync::Arc;
 
-#[derive(Debug, Default)]
-pub struct MuonState {
-    last_issued: usize, // round-robin pointer for single issue
-}
-
 /// a CTA: (launching command id, block idx), as its warps' CSRs hold
 pub type CtaId = (u64, (u32, u32, u32));
 
 pub struct MuonCore {
-    base: ModuleBase<MuonState, MuonConfig>,
+    conf: MuonConfig,
+    last_issued: usize, // round-robin pointer for single issue
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
 
@@ -34,7 +29,7 @@ pub struct MuonCore {
 
 impl MuonCore {
     pub fn new(
-        config: Arc<MuonConfig>,
+        config: MuonConfig,
         cluster_id: usize,
         core_id: usize,
         logger: &Arc<Logger>,
@@ -42,23 +37,14 @@ impl MuonCore {
         l1: usize,
     ) -> Self {
         let num_warps = config.num_warps;
-        let mut core = MuonCore {
-            base: Default::default(),
-            scheduler: Scheduler::new(Arc::clone(&config)),
+        let core = MuonCore {
+            conf: config,
+            last_issued: 0,
+            scheduler: Scheduler::new(config),
             warps: (0..num_warps)
                 .map(|warp_id| {
-                    Warp::new(
-                        Arc::new(MuonConfig {
-                            lane_config: LaneConfig {
-                                warp_id,
-                                core_id,
-                                cluster_id,
-                                ..config.lane_config
-                            },
-                            ..*config
-                        }),
-                        logger,
-                    )
+                    let lane_config = LaneConfig { warp_id, core_id, cluster_id, ..config.lane_config };
+                    Warp::new(MuonConfig { lane_config, ..config }, logger)
                 })
                 .collect(),
             logger: logger.clone(),
@@ -74,7 +60,6 @@ impl MuonCore {
             "muon core {} in cluster {} instantiated!", core_id, cluster_id
         );
 
-        core.init_conf(Arc::clone(&config));
         core
     }
 
@@ -101,14 +86,14 @@ impl MuonCore {
 
     /// unallocated warp slots, as many as the core's free regs hold at `regs` per thread
     pub fn free_warps(&self, regs: usize) -> Vec<usize> {
-        let allocated = self.scheduler.state().allocated;
+        let allocated = self.scheduler.state.allocated;
         let used: usize = self.warps.iter().filter(|w| allocated.bit(w.wid)).map(|w| w.regs).sum();
-        (0..self.conf().num_warps).filter(|&w| !allocated.bit(w)).take((self.conf().regs_per_core - used) / regs).collect()
+        (0..self.conf.num_warps).filter(|&w| !allocated.bit(w)).take((self.conf.regs_per_core - used) / regs).collect()
     }
 
     /// warps in `mask` that belong to CTA `id`
     pub(crate) fn cta_warps(&self, id: CtaId, mask: u32) -> impl Iterator<Item = usize> + '_ {
-        (0..self.conf().num_warps).filter(move |&w| mask.bit(w) && self.warps[w].cta() == id)
+        (0..self.conf.num_warps).filter(move |&w| mask.bit(w) && self.warps[w].cta() == id)
     }
 
     pub fn cta_live(&self, id: CtaId) -> bool {
@@ -117,19 +102,19 @@ impl MuonCore {
 
     /// free CTA `id`'s warp slots, stopping any still running; whether it had any here
     pub fn free_cta(&mut self, id: CtaId) -> bool {
-        let mask = self.cta_warps(id, self.scheduler.state().allocated).fold(0, |m, w| m | 1 << w);
-        let s = self.scheduler.state_mut();
+        let mask = self.cta_warps(id, self.scheduler.state.allocated).fold(0, |m, w| m | 1 << w);
+        let s = &mut self.scheduler.state;
         (s.active_warps, s.allocated) = (s.active_warps & !mask, s.allocated & !mask);
         mask != 0
     }
 
     /// RTL-style single issue: the next warp, round-robin, with a ready ibuf entry
     fn pick_warp(&mut self, now: u64, smem_free: u64, gmem_free: u64) -> Option<(usize, usize)> {
-        let n = self.conf().num_warps;
+        let n = self.conf.num_warps;
         let (wid, i) = (1..=n)
-            .map(|k| (self.base.state.last_issued + k) % n)
+            .map(|k| (self.last_issued + k) % n)
             .find_map(|w| self.ready_entry(w, now, smem_free, gmem_free).map(|i| (w, i)))?;
-        self.base.state.last_issued = wid;
+        self.last_issued = wid;
         Some((wid, i))
     }
 
@@ -176,12 +161,12 @@ impl MuonCore {
         caches: &mut [Cache],
     ) -> Result<(), ExecErr> {
         while self.warps[wid].fetch_ready <= now
-            && self.warps[wid].ibuf.len() < self.conf().ibuf_depth
+            && self.warps[wid].ibuf.len() < self.conf.ibuf_depth
             && !self.warps[wid].ibuf.back().is_some_and(|u| u.inst.is_control())
         {
             // entering a new line fetches it through the instruction cache; a miss stops the warp until
             // the line arrives, and the warp then keeps the line even if the cache has replaced it
-            let line = self.scheduler.pc(wid) as u64 / self.conf().gmem.line as u64;
+            let line = self.scheduler.pc(wid) as u64 / self.conf.gmem.line as u64;
             if line != self.warps[wid].fetched {
                 self.warps[wid].fetched = line;
                 let ready = cache::access(caches, self.l0, line, now, false).1;
@@ -209,7 +194,7 @@ impl MuonCore {
         // asleep until `wake`: nothing a warp here waits on can complete before then
         let awake = now >= self.wake;
         let active = self.scheduler.active_warp_mask();
-        for w in (0..self.conf().num_warps).filter(|&w| awake && active.bit(w)) {
+        for w in (0..self.conf.num_warps).filter(|&w| awake && active.bit(w)) {
             self.refill(w, now, smem, gmem, caches)?;
         }
         let (smem_now, gmem_now) = (*smem_free, caches[self.l1].free);
@@ -236,12 +221,12 @@ impl MuonCore {
                 }
             }
             let unit = uop.inst.unit();
-            let latency = self.conf().passes(unit) - 1 + self.conf().units.get(unit).latency;
+            let latency = self.conf.passes(unit) - 1 + self.conf.units.get(unit).latency;
             let done = if uop.smem > 0 {
                 self.stats.smem_instrs += 1;
                 self.stats.smem_reqs += uop.smem as u64;
-                *smem_free = now + uop.smem as u64 * self.conf().smem.per_bank_latency;
-                *smem_free + self.conf().smem.startup_latency
+                *smem_free = now + uop.smem as u64 * self.conf.smem.per_bank_latency;
+                *smem_free + self.conf.smem.startup_latency
             } else if unit == Unit::Lsu {
                 // global memory: present each line to the L1 a cycle after it accepted the previous one
                 let (mut t, mut ready) = (now, now);
@@ -275,14 +260,14 @@ impl MuonCore {
     /// Execute one instruction functionally; returns its `MicroOp::smem` count.
     fn exec(&mut self, wid: usize, uop: MicroOp, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> Result<u8, ExecErr> {
         let mem_lines = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
-        let banks = self.conf().smem.banks;
+        let banks = self.conf.smem.banks;
         let mut words: Vec<_> = // (bank, word) of each shared memory access
             mem_lines.iter().filter(|l| l.is_smem).map(|l| (l.address as usize / 4 % banks, l.address / 4)).collect();
         words.sort_unstable();
         words.dedup(); // lanes on the same word count once
         let smem = words.chunk_by(|a, b| a.0 == b.0).map(<[_]>::len).max().unwrap_or(0) as u8;
         if uop.inst.unit() == Unit::Lsu && smem == 0 {
-            let line = self.conf().gmem.line as u32;
+            let line = self.conf.gmem.line as u32;
             let mut lines: Vec<_> = // the lines each lane's first and last byte fall in
                 mem_lines.iter().flat_map(|l| [l.address / line, (l.address + l.size - 1) / line]).map(u64::from).collect();
             lines.sort_unstable();
@@ -294,10 +279,8 @@ impl MuonCore {
 
 }
 
-module!(MuonCore, MuonState, MuonConfig,);
-
-impl ModuleBehaviors for MuonCore {
-    fn reset(&mut self) {
+impl MuonCore {
+    pub fn reset(&mut self) {
         self.scheduler.reset();
         self.warps.iter_mut().for_each(Warp::reset);
     }

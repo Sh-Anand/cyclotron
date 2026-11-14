@@ -1,4 +1,3 @@
-use crate::base::behavior::*;
 use crate::muon::cache::{self, Cache};
 use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
@@ -138,8 +137,8 @@ impl CyclotronTop {
     }
 }
 
-impl ModuleBehaviors for CyclotronTop {
-    fn tick_one(&mut self) {
+impl CyclotronTop {
+    pub fn tick_one(&mut self) {
         self.schedule();
         self.cycle += 1;
         self.sm.tick(self.cycle, &mut self.gmem, &mut self.caches);
@@ -148,7 +147,7 @@ impl ModuleBehaviors for CyclotronTop {
         }
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.sm.cores.iter_mut().for_each(MuonCore::reset);
     }
 }
