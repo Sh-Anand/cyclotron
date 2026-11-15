@@ -30,7 +30,7 @@ pub struct DecodedInst {
 }
 
 /// one value per lane; a warp has at most 32
-pub type Lanes<T> = [Option<T>; 32];
+pub type Lanes = [u32; 32];
 
 /// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
 #[derive(Debug, Clone)]
@@ -43,10 +43,9 @@ pub struct IssuedInst {
     pub rs2_addr: u8,
     pub rs3_addr: u8,
     pub rs4_addr: u8,
-    pub rs1_data: Lanes<u32>,
-    pub rs2_data: Lanes<u32>,
-    pub rs3_data: Lanes<u32>,
-    pub rs4_data: Lanes<u32>,
+    pub rs1_data: Lanes,
+    pub rs2_data: Lanes,
+    pub rs3_data: Lanes,
     pub f7: u8,
     pub imm32: u32,
     pub imm24: i32,
@@ -258,35 +257,32 @@ pub fn sign_ext<const W: u8>(from: u32) -> i32 {
     ((from << (32 - W)) as i32) >> (32 - W)
 }
 
-/// Register file for a single SIMT lane.
+/// A warp's registers: each register's value in every lane.
 #[derive(Debug)]
 pub struct RegFile {
-    gpr: [u32; 256],
+    gpr: Vec<Lanes>,
     num_regs: usize,
 }
 
 impl RegFile {
     pub fn new(num_regs: usize) -> RegFile {
         assert!(num_regs <= 256, "currently at most 256 regs due to addr size");
-        RegFile { gpr: [0; 256], num_regs }
+        RegFile { gpr: vec![[0; 32]; 256], num_regs }
     }
 
     pub fn reset(&mut self) {
-        self.gpr.fill(0);
+        self.gpr.fill([0; 32]);
     }
 
-    pub fn read_gpr(&self, addr: u8) -> u32 {
-        if addr == 0 {
-            0u32
-        } else {
-            self.gpr[addr as usize]
-        }
+    pub fn read_gpr(&self, addr: u8) -> Lanes {
+        self.gpr[addr as usize] // x0 is never written
     }
 
-    pub fn write_gpr(&mut self, addr: u8, data: u32) {
-        assert!((addr as usize) < self.num_regs, "invalid gpr value {}", addr);
-        if addr > 0 {
-            self.gpr[addr as usize] = data;
+    /// write `data` to register `addr` in the lanes of `mask`
+    pub fn write_gpr(&mut self, addr: u8, mask: u32, data: &Lanes) {
+        assert!(mask == 0 || (addr as usize) < self.num_regs, "invalid gpr value {}", addr);
+        for lane in (0..32).filter(|&l| addr > 0 && mask.bit(l)) {
+            self.gpr[addr as usize][lane] = data[lane];
         }
     }
 }

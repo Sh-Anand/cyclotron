@@ -1,7 +1,6 @@
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, Lanes, MicroOp, RegFile};
 use crate::muon::scheduler::Scheduler;
-use crate::muon::warp::{MemRequest, MemResponse};
 use crate::utils::BitSlice;
 use half::bf16;
 use num_derive::FromPrimitive;
@@ -158,8 +157,8 @@ impl ExecuteUnit {
         move |lane| {
             op.map(|op| {
                 let operands = match issued.opcode {
-                    Opcode::OP => [issued.rs1_data[lane].unwrap(), issued.rs2_data[lane].unwrap()],
-                    Opcode::OP_IMM => [issued.rs1_data[lane].unwrap(), issued.imm32],
+                    Opcode::OP => [issued.rs1_data[lane], issued.rs2_data[lane]],
+                    Opcode::OP_IMM => [issued.rs1_data[lane], issued.imm32],
                     Opcode::AUIPC => [issued.pc, issued.imm32],
                     _ => [issued.imm32, 0], // LUI
                 };
@@ -336,13 +335,13 @@ impl ExecuteUnit {
         let f7_base = issued_inst.f7 & !0b11;
         let rd_data = match issued_inst.opcode {
             Opcode::OP_FP => opfp_f3f7_insts(f3_f7_mask!(issued_inst.f3, issued_inst.f7))
-                .map(|op| op([issued_inst.rs1_data[lane].unwrap(), issued_inst.rs2_data[lane].unwrap()]))
+                .map(|op| op([issued_inst.rs1_data[lane], issued_inst.rs2_data[lane]]))
                 .or_else(|| {
                     let op = if fmt == 0b10 { opfp_f7_bf16_insts(f7_base) } else { opfp_f7_fp32_insts(f7_base) };
                     op.map(|op| {
                         op([
-                            issued_inst.rs1_data[lane].unwrap(),
-                            issued_inst.rs2_data[lane].unwrap(),
+                            issued_inst.rs1_data[lane],
+                            issued_inst.rs2_data[lane],
                             issued_inst.rs2_addr as u32,
                             issued_inst.f3 as u32,
                         ])
@@ -391,9 +390,9 @@ impl ExecuteUnit {
                     }
                 };
                 Some(op([
-                    issued_inst.rs1_data[lane].unwrap(),
-                    issued_inst.rs2_data[lane].unwrap(),
-                    issued_inst.rs3_data[lane].unwrap(),
+                    issued_inst.rs1_data[lane],
+                    issued_inst.rs2_data[lane],
+                    issued_inst.rs3_data[lane],
                 ]))
             }
             _ => {
@@ -406,8 +405,8 @@ impl ExecuteUnit {
 
     /// Returns Some(target PC) if branch is taken, None otherwise.
     pub fn branch(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
-        let rs1 = issued_inst.rs1_data[lane].unwrap();
-        let rs2 = issued_inst.rs2_data[lane].unwrap();
+        let rs1 = issued_inst.rs1_data[lane];
+        let rs2 = issued_inst.rs2_data[lane];
         let branch_offset = issued_inst.imm32;
         let branch_target = issued_inst.pc.wrapping_add(branch_offset);
         let taken = match issued_inst.f3 {
@@ -422,85 +421,13 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    fn load(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
-        let key = (issued_inst.f3, issued_inst.opext);
-        let shared_load = issued_inst.opext == 1;
-        // lb, lh, lw, ld, lbu, lhu, lwu; .global or .shared
-        if !matches!(key, (0..=6, 0 | 1)) {
-            unimplemented!("unknown load instruction")
-        }
-        let alu_result = issued_inst.rs1_data[lane].unwrap().wrapping_add(issued_inst.imm32);
-
-        let logsize = issued_inst.f3 & 3;
-        let size = 1u32 << logsize;
-        let addr = alu_result;
-        let sext = !issued_inst.f3.bit(2);
-
-        Some(MemRequest {
-            addr,
-            data: None,
-            size,
-            is_sext: sext,
-            is_store: false,
-            is_smem: shared_load,
-            is_amo: false,
-            amo_op: 0,
-        })
-    }
-
-    fn store(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
-        let key = (issued_inst.f3, issued_inst.opext);
-        let shared_store = issued_inst.opext == 1;
-        // sb, sh, sw; .global or .shared
-        if !matches!(key, (0..=2, 0 | 1)) {
-            unimplemented!("unknown store instruction")
-        }
-        let alu_result = issued_inst.rs1_data[lane].unwrap().wrapping_add(issued_inst.imm32);
-
-        let addr = alu_result;
-        let data = issued_inst.rs2_data[lane].unwrap();
-        let logsize = issued_inst.f3 & 3;
-        let size = 1u32 << logsize;
-
-        Some(MemRequest {
-            addr,
-            data: Some(data),
-            size,
-            is_sext: false,
-            is_store: true,
-            is_smem: shared_store,
-            is_amo: false,
-            amo_op: 0,
-        })
-    }
-
-    fn amo(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
-        let funct5 = issued_inst.f7 >> 2;
-        assert!(matches!(funct5, 0b00000 | 0b00001), "unsupported AMO funct5={:#07b}", funct5); // amoadd.w, amoswap.w
-
-        let addr = issued_inst.rs1_data[lane].unwrap();
-        let data = issued_inst.rs2_data[lane].unwrap();
-
-        Some(MemRequest {
-            addr,
-            data: Some(data),
-            size: 4,
-            is_sext: false,
-            is_store: false,
-            is_smem: false,
-            is_amo: true,
-            amo_op: funct5,
-        })
-    }
-
     /// every active lane reads the old value; the first active lane's operand updates the csr
     pub fn csr(
         issued_inst: &IssuedInst,
         tmask: u32,
-        num_lanes: usize,
         csrf: &mut CSRFile,
         active_warps: u32,
-    ) -> Lanes<u32> {
+    ) -> (u32, Lanes) {
         let csr_type = match issued_inst.f3 {
             1 => CSRType::RW,  // csrrw
             2 => CSRType::RS,  // csrrs
@@ -512,7 +439,7 @@ impl ExecuteUnit {
         };
         let first_lid = tmask.trailing_zeros() as usize;
         let operand = match csr_type {
-            CSRType::RW | CSRType::RS | CSRType::RC => issued_inst.rs1_data[first_lid].unwrap(),
+            CSRType::RW | CSRType::RS | CSRType::RC => issued_inst.rs1_data[first_lid],
             CSRType::RWI | CSRType::RSI | CSRType::RCI => issued_inst.csr_imm as u32,
         };
         let csrr = matches!(csr_type, CSRType::RS | CSRType::RSI) && operand == 0;
@@ -520,8 +447,7 @@ impl ExecuteUnit {
         if [0xcc3, 0xcc4].contains(&addr) && !csrr {
             panic!("unimplemented thread mask write using csr");
         }
-        let rds =
-            std::array::from_fn(|lane| (lane < num_lanes && tmask.bit(lane)).then(|| csrf.read(addr, lane, tmask, active_warps)));
+        let rds = Self::collect_lanes(|lane| Some(csrf.read(addr, lane, tmask, active_warps)), tmask);
         let old = csrf.read(addr, first_lid, tmask, active_warps);
         csrf.write(addr, match csr_type {
             CSRType::RW | CSRType::RWI => operand,
@@ -535,7 +461,7 @@ impl ExecuteUnit {
         issued_inst: &IssuedInst,
         wid: usize,
         first_lid: usize,
-        rf: &mut [RegFile],
+        num_lanes: usize,
         scheduler: &mut Scheduler,
     ) {
         let sfu_type = if issued_inst.opcode == Opcode::SYSTEM {
@@ -563,12 +489,8 @@ impl ExecuteUnit {
             first_lid,
             sfu_type,
             issued_inst,
-            rf.iter()
-                .map(|lrf| lrf.read_gpr(issued_inst.rs1_addr))
-                .collect(),
-            rf.iter()
-                .map(|lrf| lrf.read_gpr(issued_inst.rs2_addr))
-                .collect(),
+            issued_inst.rs1_data[..num_lanes].to_vec(),
+            issued_inst.rs2_data[..num_lanes].to_vec(),
         )
     }
 
@@ -576,7 +498,7 @@ impl ExecuteUnit {
         match f3_f7_mask!(issued_inst.f3, issued_inst.f7) {
             // fexp.h
             0b111_0101110 => {
-                let a = issued_inst.rs1_data[lane].unwrap();
+                let a = issued_inst.rs1_data[lane];
                 let result = bf16::from_f32(bf16::from_bits((a & 0xffff) as u16).to_f32().exp()).to_bits();
                 Some(if [0xffc0, 0x7fff, 0xffff].contains(&result) { 0x7fc0 } else { sign_ext::<16>(result as u32) as u32 })
             }
@@ -585,20 +507,8 @@ impl ExecuteUnit {
     }
 
     /// Collect source operand values from the regfile.
-    pub fn collect(ibuf: &MicroOp, rf: &[RegFile]) -> IssuedInst {
+    pub fn collect(ibuf: &MicroOp, rf: &RegFile) -> IssuedInst {
         let decoded = ibuf.inst;
-        let tmask = ibuf.tmask;
-
-        let collect_source_reg = |rs_addr| -> Lanes<u32> {
-            std::array::from_fn(|lane| rf.get(lane).filter(|_| tmask.bit(lane)).map(|lrf| lrf.read_gpr(rs_addr)))
-        };
-        let rs1_data = collect_source_reg(decoded.rs1_addr);
-        let rs2_data = collect_source_reg(decoded.rs2_addr);
-        // only fused multiply-adds read rs3 (nothing reads rs4)
-        let has = decoded.has_regs();
-        let rs3_data = if has.rs3 { collect_source_reg(decoded.rs3_addr) } else { [None; 32] };
-        let rs4_data = if has.rs4 { collect_source_reg(decoded.rs4_addr) } else { [None; 32] };
-
         IssuedInst {
             opcode: decoded.opcode,
             opext: decoded.opext,
@@ -608,10 +518,9 @@ impl ExecuteUnit {
             rs2_addr: decoded.rs2_addr,
             rs3_addr: decoded.rs3_addr,
             rs4_addr: decoded.rs4_addr,
-            rs1_data,
-            rs2_data,
-            rs3_data,
-            rs4_data,
+            rs1_data: rf.read_gpr(decoded.rs1_addr),
+            rs2_data: rf.read_gpr(decoded.rs2_addr),
+            rs3_data: rf.read_gpr(decoded.rs3_addr),
             f7: decoded.f7,
             imm32: decoded.imm32,
             imm24: decoded.imm24,
@@ -621,93 +530,74 @@ impl ExecuteUnit {
         }
     }
 
+    /// `func` for each lane of `tmask`: the lanes it gave a value for, and those values
     #[inline]
-    fn collect_lanes<F, T>(mut func: F, tmask: u32, rf: &mut [RegFile]) -> Lanes<T>
-    where
-        F: FnMut(usize) -> Option<T>,
-    {
-        std::array::from_fn(|lane| if lane < rf.len() && tmask.bit(lane) { func(lane) } else { None })
+    pub fn collect_lanes(mut func: impl FnMut(usize) -> Option<u32>, tmask: u32) -> (u32, Lanes) {
+        let (mut mask, mut data) = (0, [0; 32]);
+        for lane in (0..32).filter(|&l| tmask.bit(l)) {
+            if let Some(d) = func(lane) {
+                mask |= 1 << lane;
+                data[lane] = d;
+            }
+        }
+        (mask, data)
     }
 
-    /// Execute one instruction: its rd data per lane, and its memory requests still to serve.
+    /// Execute one instruction other than a load, store or AMO: the lanes that write rd, and their rd data.
     pub fn execute(
         issued: &IssuedInst,
         wid: usize,
         tmask: u32,
-        rf: &mut [RegFile],
+        num_lanes: usize,
         csrf: &mut CSRFile,
         scheduler: &mut Scheduler,
-    ) -> (Lanes<u32>, Lanes<MemRequest>) {
-        let num_lanes = rf.len();
-        // lane id of first active thread
-        let first_lid = tmask.trailing_zeros() as usize;
-
-
-        let empty = [None::<u32>; 32];
-        let empty_mem = [None::<MemRequest>; 32];
+    ) -> (u32, Lanes) {
+        let first_lid = tmask.trailing_zeros() as usize; // lane id of first active thread
+        let empty = (0, [0; 32]);
 
         match issued.opcode {
-            Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => (
-                Self::collect_lanes(ExecuteUnit::alu(&issued), tmask, rf),
-                empty_mem,
-            ),
-            Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => (
-                Self::collect_lanes(|lane| ExecuteUnit::fpu(&issued, lane), tmask, rf),
-                empty_mem,
-            ),
+            Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => Self::collect_lanes(ExecuteUnit::alu(issued), tmask),
+            Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
+                Self::collect_lanes(|lane| ExecuteUnit::fpu(issued, lane), tmask)
+            }
             Opcode::BRANCH => {
-                if let Some(target) = ExecuteUnit::branch(&issued, first_lid) {
+                if let Some(target) = ExecuteUnit::branch(issued, first_lid) {
                     scheduler.take_branch(wid, target);
                 }
-                (empty, empty_mem)
+                empty
             }
             Opcode::JAL => {
                 scheduler.take_branch(wid, issued.pc.wrapping_add(issued.imm32));
-                (Self::collect_lanes(|_| Some(issued.pc + 8), tmask, rf), empty_mem)
+                Self::collect_lanes(|_| Some(issued.pc + 8), tmask)
             }
             Opcode::JALR => {
-                let target = issued.rs1_data[first_lid]
-                    .unwrap()
-                    .wrapping_add(issued.imm32);
+                let target = issued.rs1_data[first_lid].wrapping_add(issued.imm32);
                 scheduler.take_branch(wid, target);
-                (Self::collect_lanes(|_| Some(issued.pc + 8), tmask, rf), empty_mem)
+                Self::collect_lanes(|_| Some(issued.pc + 8), tmask)
             }
-            Opcode::LOAD => (
-                empty,
-                Self::collect_lanes(|lane| ExecuteUnit::load(&issued, lane), tmask, rf),
-            ),
-            Opcode::STORE => (
-                empty,
-                Self::collect_lanes(|lane| ExecuteUnit::store(&issued, lane), tmask, rf),
-            ),
-            Opcode::AMO => (
-                empty,
-                Self::collect_lanes(|lane| ExecuteUnit::amo(&issued, lane), tmask, rf),
-            ),
             Opcode::MISC_MEM => {
                 // fence, fence.i, fence.s
                 if issued.f3 > 2 {
                     panic!("unimplemented")
                 }
                 // TODO fence
-                (empty, empty_mem)
+                empty
             }
             Opcode::SYSTEM => {
                 if issued.f3 == 0 {
                     // tohost
                     // FIXME: tmask?
-                    ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler);
-                    (empty, empty_mem)
+                    ExecuteUnit::sfu(issued, wid, first_lid, num_lanes, scheduler);
+                    empty
                 } else {
                     // csr
-                    let rds = ExecuteUnit::csr(&issued, tmask, num_lanes, csrf, scheduler.active_warp_mask());
-                    (rds, empty_mem)
+                    ExecuteUnit::csr(issued, tmask, csrf, scheduler.active_warp_mask())
                 }
             }
             Opcode::CUSTOM0 => {
                 // FIXME: tmask?
-                ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler);
-                (empty, empty_mem)
+                ExecuteUnit::sfu(issued, wid, first_lid, num_lanes, scheduler);
+                empty
             }
             Opcode::CUSTOM1 => {
                 // vx_tex, vx_cmov, vx_rop
@@ -716,48 +606,10 @@ impl ExecuteUnit {
             Opcode::CUSTOM2 => {
                 panic!("nu.* instructions (Neutrino) are not supported")
             }
-            Opcode::CUSTOM3 => (
-                Self::collect_lanes(|lane| ExecuteUnit::custom3(&issued, lane), tmask, rf),
-                empty_mem,
-            ),
+            Opcode::CUSTOM3 => Self::collect_lanes(|lane| ExecuteUnit::custom3(issued, lane), tmask),
             _ => {
                 panic!("unimplemented opcode 0x{:x}", issued.opcode);
             }
-        }
-    }
-
-    /// Generate rd writeback for the memory load responses handled after EX & came back from
-    /// memory.
-    pub fn mem_writeback(req: &MemRequest, resp: &MemResponse) -> Option<u32> {
-        if req.is_store {
-            None
-        } else {
-            let addr = req.addr;
-            let size = req.size;
-            assert_eq!(addr >> 2, (addr + size - 1) >> 2, "misaligned load");
-
-            let bit_offset = ((addr & 3) * 8) as usize;
-
-            let load_data_bytes = resp.data.expect("mem load response doesn't contain data");
-            let raw_load = u32::from_le_bytes(load_data_bytes);
-            let sext = req.is_sext;
-            let opt_sext = |f: fn(u32) -> i32, x: u32| {
-                if sext {
-                    f(x) as u32
-                } else {
-                    x
-                }
-            };
-            let rd = match size {
-                1 => opt_sext(sign_ext::<8>, raw_load.sel(7 + bit_offset, bit_offset)), // load byte
-                2 => opt_sext(sign_ext::<16>, raw_load.sel(15 + bit_offset, bit_offset)), // load half
-                4 => raw_load, // load word
-                _ => panic!("unimplemented load type"),
-            };
-
-            // info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
-            //         issued_inst.f3, addr_aligned, raw_load, rd);
-            Some(rd)
         }
     }
 }
