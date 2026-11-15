@@ -185,28 +185,6 @@ impl DecodedInst {
     }
 }
 
-impl IssuedInst {
-    pub fn has_regs(&self) -> HasRegs {
-        DecodedInst {
-            opcode: self.opcode,
-            opext: self.opext,
-            rd_addr: self.rd_addr,
-            f3: self.f3,
-            rs1_addr: self.rs1_addr,
-            rs2_addr: self.rs2_addr,
-            rs3_addr: self.rs3_addr,
-            rs4_addr: self.rs4_addr,
-            f7: self.f7,
-            imm32: self.imm32,
-            imm24: self.imm24,
-            csr_imm: self.csr_imm,
-            pc: self.pc,
-            raw: self.raw,
-        }
-        .has_regs()
-    }
-}
-
 impl Display for IssuedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -281,7 +259,10 @@ impl RegFile {
     /// write `data` to register `addr` in the lanes of `mask`
     pub fn write_gpr(&mut self, addr: u8, mask: u32, data: &Lanes) {
         assert!(mask == 0 || (addr as usize) < self.num_regs, "invalid gpr value {}", addr);
-        for lane in (0..32).filter(|&l| addr > 0 && mask.bit(l)) {
+        if addr == 0 {
+            return;
+        }
+        for lane in (0..32).filter(|&l| mask.bit(l)) {
             self.gpr[addr as usize][lane] = data[lane];
         }
     }

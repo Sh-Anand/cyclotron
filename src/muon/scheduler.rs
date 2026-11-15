@@ -77,15 +77,8 @@ impl Scheduler {
         }
     }
 
-    pub fn sfu(
-        &mut self,
-        wid: usize,
-        first_lid: usize,
-        sfu: SFUType,
-        decoded_inst: &IssuedInst,
-        rs1: Vec<u32>,
-        rs2: Vec<u32>,
-    ) {
+    pub fn sfu(&mut self, wid: usize, first_lid: usize, sfu: SFUType, decoded_inst: &IssuedInst) {
+        let (rs1, rs2) = (&decoded_inst.rs1_data, &decoded_inst.rs2_data);
         // for warp-wide operations, we take lane 0 to be the truth
         self.state.pc[wid] = decoded_inst.pc + 8; // flush
         match sfu {

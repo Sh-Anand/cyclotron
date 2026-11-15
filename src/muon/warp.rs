@@ -96,7 +96,7 @@ impl Warp {
             let ((mask, rd_data), counts) = if uop.unit == Unit::Lsu {
                 self.mem(&issued, tmask, smem, gmem)
             } else {
-                (ExecuteUnit::execute(&issued, wid, tmask, self.conf.num_lanes, &mut self.csr_file, scheduler), (0, 0))
+                (ExecuteUnit::execute(&issued, wid, tmask, &mut self.csr_file, scheduler), (0, 0))
             };
             self.reg_file.write_gpr(rd_addr, mask, &rd_data);
             info!(self.logger, "[core {} warp {}] PC=0x{:08x}, rd={:3}", self.conf.lane_config.core_id, wid, pc, rd_addr);

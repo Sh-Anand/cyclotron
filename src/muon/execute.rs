@@ -461,7 +461,6 @@ impl ExecuteUnit {
         issued_inst: &IssuedInst,
         wid: usize,
         first_lid: usize,
-        num_lanes: usize,
         scheduler: &mut Scheduler,
     ) {
         let sfu_type = if issued_inst.opcode == Opcode::SYSTEM {
@@ -484,14 +483,7 @@ impl ExecuteUnit {
             }
         };
 
-        scheduler.sfu(
-            wid,
-            first_lid,
-            sfu_type,
-            issued_inst,
-            issued_inst.rs1_data[..num_lanes].to_vec(),
-            issued_inst.rs2_data[..num_lanes].to_vec(),
-        )
+        scheduler.sfu(wid, first_lid, sfu_type, issued_inst)
     }
 
     pub fn custom3(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
@@ -548,7 +540,6 @@ impl ExecuteUnit {
         issued: &IssuedInst,
         wid: usize,
         tmask: u32,
-        num_lanes: usize,
         csrf: &mut CSRFile,
         scheduler: &mut Scheduler,
     ) -> (u32, Lanes) {
@@ -587,7 +578,7 @@ impl ExecuteUnit {
                 if issued.f3 == 0 {
                     // tohost
                     // FIXME: tmask?
-                    ExecuteUnit::sfu(issued, wid, first_lid, num_lanes, scheduler);
+                    ExecuteUnit::sfu(issued, wid, first_lid, scheduler);
                     empty
                 } else {
                     // csr
@@ -596,7 +587,7 @@ impl ExecuteUnit {
             }
             Opcode::CUSTOM0 => {
                 // FIXME: tmask?
-                ExecuteUnit::sfu(issued, wid, first_lid, num_lanes, scheduler);
+                ExecuteUnit::sfu(issued, wid, first_lid, scheduler);
                 empty
             }
             Opcode::CUSTOM1 => {
