@@ -32,26 +32,20 @@ pub struct DecodedInst {
 /// one value per lane; a warp has at most 32
 pub type Lanes = [u32; 32];
 
-/// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
+/// A decoded instruction with its source operands read
 #[derive(Debug, Clone)]
 pub struct IssuedInst {
-    pub opcode: u8,
-    pub opext: u8,
-    pub rd_addr: u8,
-    pub f3: u8,
-    pub rs1_addr: u8,
-    pub rs2_addr: u8,
-    pub rs3_addr: u8,
-    pub rs4_addr: u8,
+    pub inst: DecodedInst,
     pub rs1_data: Lanes,
     pub rs2_data: Lanes,
     pub rs3_data: Lanes,
-    pub f7: u8,
-    pub imm32: u32,
-    pub imm24: i32,
-    pub csr_imm: u8,
-    pub pc: u32,
-    pub raw: u64,
+}
+
+impl std::ops::Deref for IssuedInst {
+    type Target = DecodedInst;
+    fn deref(&self) -> &DecodedInst {
+        &self.inst
+    }
 }
 
 impl DecodedInst {

@@ -92,7 +92,7 @@ impl Warp {
         assert!(scheduler.state.thread_masks[wid] == tmask, "scheduler tmask was not set correctly");
 
         catch_unwind(AssertUnwindSafe(|| {
-            let issued = ExecuteUnit::collect(&uop, &self.reg_file);
+            let issued = ExecuteUnit::collect(&uop.inst, &self.reg_file);
             let ((mask, rd_data), counts) = if uop.unit == Unit::Lsu {
                 self.mem(&issued, tmask, smem, gmem)
             } else {

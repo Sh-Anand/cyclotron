@@ -1,5 +1,5 @@
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{sign_ext, IssuedInst, Lanes, MicroOp, RegFile};
+use crate::muon::decode::{sign_ext, DecodedInst, IssuedInst, Lanes, RegFile};
 use crate::muon::scheduler::Scheduler;
 use crate::utils::BitSlice;
 use half::bf16;
@@ -499,26 +499,12 @@ impl ExecuteUnit {
     }
 
     /// Collect source operand values from the regfile.
-    pub fn collect(ibuf: &MicroOp, rf: &RegFile) -> IssuedInst {
-        let decoded = ibuf.inst;
+    pub fn collect(inst: &DecodedInst, rf: &RegFile) -> IssuedInst {
         IssuedInst {
-            opcode: decoded.opcode,
-            opext: decoded.opext,
-            rd_addr: decoded.rd_addr,
-            f3: decoded.f3,
-            rs1_addr: decoded.rs1_addr,
-            rs2_addr: decoded.rs2_addr,
-            rs3_addr: decoded.rs3_addr,
-            rs4_addr: decoded.rs4_addr,
-            rs1_data: rf.read_gpr(decoded.rs1_addr),
-            rs2_data: rf.read_gpr(decoded.rs2_addr),
-            rs3_data: rf.read_gpr(decoded.rs3_addr),
-            f7: decoded.f7,
-            imm32: decoded.imm32,
-            imm24: decoded.imm24,
-            csr_imm: decoded.csr_imm,
-            pc: decoded.pc,
-            raw: decoded.raw,
+            inst: *inst,
+            rs1_data: rf.read_gpr(inst.rs1_addr),
+            rs2_data: rf.read_gpr(inst.rs2_addr),
+            rs3_data: rf.read_gpr(inst.rs3_addr),
         }
     }
 
