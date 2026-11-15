@@ -118,35 +118,36 @@ impl MuonCore {
         Some((wid, i))
     }
 
-    /// the cycle entry `e` of `warp` has its registers and memory ready, ignoring older entries
-    fn ready_at(warp: &Warp, e: &MicroOp, smem_free: u64, gmem_free: u64) -> u64 {
-        let regs = e.rs.iter().chain(&e.rd).map(|&r| warp.reg_ready[r]).max().unwrap_or(0); // scoreboard: RAW, WAW
-        // one memory op at a time per SM, for shared memory and for global memory.  A global op also
-        // waits for the warp's older stores, and a store for its older loads
-        let mem = if e.unit != Unit::Lsu {
-            0
-        } else if e.smem > 0 {
-            smem_free
-        } else {
-            gmem_free.max(warp.store_done).max(if e.inst.is_store() { warp.load_done } else { 0 })
-        };
-        regs.max(mem)
-    }
-
-    /// oldest ibuf entry of warp `w` with no hazard on older entries and its registers ready at `now`
-    fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64) -> Option<usize> {
-        let warp = &self.warps[w];
-        (0..warp.ibuf.len()).find(|&i| {
+    /// set `ready` of `warp`'s ibuf entries from index `from` on: a decode changes only the new entry's,
+    /// and an issue only those of the entries younger than the one issued
+    fn set_ready(warp: &mut Warp, from: usize) {
+        for i in from..warp.ibuf.len() {
             let u = &warp.ibuf[i];
             let hazard = |o: &MicroOp| {
                 o.rd.is_some_and(|r| u.rd == Some(r) || u.rs.contains(&r)) // WAW, RAW
                     || u.rd.is_some_and(|r| o.rs.contains(&r)) // WAR
                     || (u.unit == Unit::Lsu && o.unit == Unit::Lsu) // memory ops stay in order
             };
-            (i == 0 || !u.inst.is_control()) // control issues last
-                && !warp.ibuf.range(..i).any(hazard)
-                && Self::ready_at(warp, u, smem_free, gmem_free) <= now
-        })
+            let ready = if (i > 0 && u.inst.is_control()) || warp.ibuf.range(..i).any(hazard) {
+                u64::MAX // control issues last
+            } else {
+                let regs = u.rs.iter().chain(&u.rd).map(|&r| warp.reg_ready[r]).max().unwrap_or(0); // scoreboard: RAW, WAW
+                // a global memory op waits for the warp's older stores, and a store for its older loads
+                let global = u.unit == Unit::Lsu && u.smem == 0;
+                regs.max(if global { warp.store_done.max(if u.inst.is_store() { warp.load_done } else { 0 }) } else { 0 })
+            };
+            warp.ibuf[i].ready = ready;
+        }
+    }
+
+    /// the cycle entry `e` can issue: one memory op at a time per SM, for shared memory and for global memory
+    fn ready_at(e: &MicroOp, smem_free: u64, gmem_free: u64) -> u64 {
+        e.ready.max(if e.unit != Unit::Lsu { 0 } else if e.smem > 0 { smem_free } else { gmem_free })
+    }
+
+    /// oldest ibuf entry of warp `w` that can issue at `now`
+    fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64) -> Option<usize> {
+        self.warps[w].ibuf.iter().position(|e| Self::ready_at(e, smem_free, gmem_free) <= now)
     }
 
     /// top up warp `wid`'s ibuf; non-control instructions execute as they are decoded
@@ -177,7 +178,9 @@ impl MuonCore {
             if !uop.inst.is_control() {
                 (uop.smem, uop.gmem) = self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
             }
-            self.warps[wid].ibuf.push_back(uop);
+            let warp = &mut self.warps[wid];
+            warp.ibuf.push_back(uop);
+            Self::set_ready(warp, warp.ibuf.len() - 1);
         }
         Ok(())
     }
@@ -203,7 +206,7 @@ impl MuonCore {
             self.wake = (self.warps.iter())
                 .flat_map(|w| {
                     let fetch = (w.fetch_ready != u64::MAX).then_some(w.fetch_ready);
-                    w.ibuf.iter().map(move |e| Self::ready_at(w, e, smem_now, gmem_now)).chain(fetch)
+                    w.ibuf.iter().map(move |e| Self::ready_at(e, smem_now, gmem_now)).chain(fetch)
                 })
                 .filter(|&t| t > now)
                 .min()
@@ -247,6 +250,7 @@ impl MuonCore {
             if let Some(rd) = uop.rd {
                 self.warps[wid].reg_ready[rd] = done;
             }
+            Self::set_ready(&mut self.warps[wid], i);
         } else if self.warps.iter().any(|w| !w.ibuf.is_empty()) {
             self.stats.stall_deps += 1;
         } else if self.warps.iter().any(|w| w.fetch_ready == u64::MAX) {

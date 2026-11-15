@@ -199,6 +199,7 @@ pub struct MicroOp {
     pub rd: Option<usize>, // `inst.rd()`
     pub rs: [usize; 4],    // `inst.rs()`; unused slots are 0, which is never a destination
     pub unit: Unit,        // `inst.unit()`
+    pub ready: u64,        // cycle it can issue once its memory is free; u64::MAX while an older ibuf entry blocks it
     pub smem: u8, // shared memory request: distinct words in its fullest bank; 0 if not one
     pub gmem: u8, // global memory request: its lines waiting in `Warp::gmem_lines`
 }

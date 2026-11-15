@@ -76,7 +76,7 @@ impl Warp {
         let inst = DecodeUnit::decode(inst, schedule.pc);
         let mut rs = [0; 4];
         zip(&mut rs, inst.rs()).for_each(|(s, r)| *s = r);
-        MicroOp { inst, tmask: schedule.mask, rd: inst.rd(), rs, unit: inst.unit(), smem: 0, gmem: 0 }
+        MicroOp { inst, tmask: schedule.mask, rd: inst.rd(), rs, unit: inst.unit(), ready: u64::MAX, smem: 0, gmem: 0 }
     }
 
     /// Execute `uop` functionally: read its operands, execute it, serve its memory requests and
