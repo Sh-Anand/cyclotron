@@ -16,6 +16,7 @@ pub struct SM {
     smem_free: u64,                 // first cycle shared memory can start a request
     smem_used: Vec<Range<usize>>,   // allocated smem ranges, sorted by start
     pub frees: usize,               // CTAs freed so far; launchers retry placement only after one
+    pub events: u64,                // times a warp stopped or a core errored; a CTA can only finish or fail then
 }
 
 impl SM {
@@ -31,6 +32,7 @@ impl SM {
             errs: vec![None; config.num_cores],
             smem_used: vec![],
             frees: 0,
+            events: 0,
         }
     }
 
@@ -96,10 +98,12 @@ impl SM {
     pub fn tick(&mut self, now: u64, gmem: &mut FlatMemory, caches: &mut [Cache]) {
         // cores with running warps; a core that errored stops until its CTAs are freed
         for (core, err) in self.cores.iter_mut().zip(self.errs.iter_mut()) {
-            if err.is_none() && core.scheduler.active_warp_mask() != 0 {
+            let active = core.scheduler.active_warp_mask();
+            if err.is_none() && active != 0 {
                 if let Err(e) = core.process(now, &mut self.smem, &mut self.smem_free, gmem, caches) {
                     *err = Some(e);
                 }
+                self.events += (err.is_some() || core.scheduler.active_warp_mask() != active) as u64;
             }
         }
         for c in 0..self.cores.len() {
