@@ -62,11 +62,11 @@ pub struct CacheConfig {
     pub mshrs: usize,
     pub hit_latency: u64,
     pub miss_latency: u64, // on top of the next level's access; the last level's includes DRAM
-    pub bus_cycles: u64,   // cycles a miss holds the link to the next level
+    pub bus_cycles: u64,   // cycles a miss, or a store passed on, holds the link to the next level
 }
 
 /// Global memory: L0 per core for instructions, L1 per SM (the first level for data), L2 shared by
-/// all SMs and backed by DRAM
+/// all SMs and backed by DRAM.  The L1 is write-through, the L2 writes back.
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(default)]
 pub struct GmemConfig {

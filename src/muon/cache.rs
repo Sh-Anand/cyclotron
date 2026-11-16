@@ -6,7 +6,7 @@ const INVALID: u64 = u64::MAX;
 struct Line {
     tag: u64,   // line number
     ready: u64, // cycle its data arrives
-    dirty: bool,
+    dirty: bool, // only in the level backed by DRAM: the levels above are write-through
 }
 
 /// One cache level.  All levels live in one array and link to each other by index.
@@ -70,14 +70,25 @@ fn evict_above(caches: &mut [Cache], i: usize, line: u64) -> bool {
     dirty
 }
 
-/// access `line` in cache `i` at cycle `t`: (cycle accepted, cycle its data is available)
+/// access `line` in cache `i` at cycle `t`: (cycle accepted, cycle its data is available).  A level
+/// above another cache is write-through: a store completes on its own timing and is passed on to the
+/// next level, so everything below the first level always sees it.
 pub fn access(caches: &mut [Cache], i: usize, line: u64, t: u64, write: bool) -> (u64, u64) {
     let c = &mut caches[i];
     let (conf, next) = (c.conf, c.next);
     c.accesses += 1;
-    if let Some(l) = c.set(line).iter_mut().find(|l| l.tag == line) {
-        l.dirty |= write;
-        return (t, t.max(l.ready) + conf.hit_latency);
+    let hit = c.set(line).iter_mut().find(|l| l.tag == line).map(|l| {
+        l.dirty |= write && next.is_none();
+        t.max(l.ready) + conf.hit_latency
+    });
+    if let Some(done) = hit {
+        if let (true, Some(n)) = (write, next) {
+            // the store holds the link to the next level as a miss does
+            let start = t.max(caches[i].bus_free);
+            caches[i].bus_free = start + conf.bus_cycles;
+            access(caches, n, line, start, true);
+        }
+        return (t, done);
     }
     c.misses += 1;
     let m = (0..conf.mshrs).min_by_key(|&m| c.mshrs[m]).unwrap();
@@ -91,11 +102,11 @@ pub fn access(caches: &mut [Cache], i: usize, line: u64, t: u64, write: bool) ->
             access(caches, n, old.tag, start, true);
         }
     }
-    let fill = next.map_or(start, |n| access(caches, n, line, start, false).1);
+    let fill = next.map_or(start, |n| access(caches, n, line, start, write).1); // a store's fill passes it on
     let done = fill + conf.miss_latency;
     caches[i].mshrs[m] = done;
     let set = caches[i].set(line);
     set.rotate_right(1);
-    set[0] = Line { tag: line, ready: done, dirty: write };
+    set[0] = Line { tag: line, ready: done, dirty: write && next.is_none() };
     (accepted, done)
 }
