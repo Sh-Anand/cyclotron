@@ -124,11 +124,11 @@ impl MuonCore {
     }
 
     /// RTL-style single issue: the next warp, round-robin, with a ready ibuf entry
-    fn pick_warp(&mut self, now: u64, smem_free: u64, gmem_free: u64) -> Option<(usize, usize)> {
+    fn pick_warp(&mut self, now: u64, smem_free: u64, gmem_free: u64, launch_free: u64) -> Option<(usize, usize)> {
         let n = self.conf.num_warps;
         let (wid, i) = (1..=n)
             .map(|k| (self.last_issued + k) % n)
-            .find_map(|w| self.ready_entry(w, now, smem_free, gmem_free).map(|i| (w, i)))?;
+            .find_map(|w| self.ready_entry(w, now, smem_free, gmem_free, launch_free).map(|i| (w, i)))?;
         self.last_issued = wid;
         Some((wid, i))
     }
@@ -155,14 +155,19 @@ impl MuonCore {
         }
     }
 
-    /// the cycle entry `e` can issue: one memory op at a time per SM, for shared memory and for global memory
-    fn ready_at(e: &MicroOp, smem_free: u64, gmem_free: u64) -> u64 {
-        e.ready.max(if e.unit != Unit::Lsu { 0 } else if e.smem > 0 { smem_free } else { gmem_free })
+    /// the cycle entry `e` can issue: per SM, one memory op at a time for shared memory and for global memory, and one launch a cycle
+    fn ready_at(e: &MicroOp, smem_free: u64, gmem_free: u64, launch_free: u64) -> u64 {
+        e.ready.max(match e.unit {
+            Unit::Lsu if e.smem > 0 => smem_free,
+            Unit::Lsu => gmem_free,
+            Unit::Launch => launch_free,
+            _ => 0,
+        })
     }
 
     /// oldest ibuf entry of warp `w` that can issue at `now`
-    fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64) -> Option<usize> {
-        self.warps[w].ibuf.iter().position(|e| Self::ready_at(e, smem_free, gmem_free) <= now)
+    fn ready_entry(&self, w: usize, now: u64, smem_free: u64, gmem_free: u64, launch_free: u64) -> Option<usize> {
+        self.warps[w].ibuf.iter().position(|e| Self::ready_at(e, smem_free, gmem_free, launch_free) <= now)
     }
 
     /// top up warp `wid`'s ibuf; non-control instructions execute as they are decoded
@@ -206,6 +211,7 @@ impl MuonCore {
         now: u64,
         smem: &mut FlatMemory,
         smem_free: &mut u64,
+        launch_free: &mut u64,
         gmem: &mut FlatMemory,
         caches: &mut [Cache],
     ) -> Result<(), ExecErr> {
@@ -215,13 +221,13 @@ impl MuonCore {
         for w in (0..self.conf.num_warps).filter(|&w| awake && active.bit(w)) {
             self.refill(w, now, smem, gmem, caches)?;
         }
-        let (smem_now, gmem_now) = (*smem_free, caches[self.l1].free);
-        let picked = if awake { self.pick_warp(now, smem_now, gmem_now) } else { None };
+        let (smem_now, gmem_now, launch_now) = (*smem_free, caches[self.l1].free, *launch_free);
+        let picked = if awake { self.pick_warp(now, smem_now, gmem_now, launch_now) } else { None };
         if awake && picked.is_none() {
             self.wake = (self.warps.iter())
                 .flat_map(|w| {
                     let fetch = (w.fetch_ready != u64::MAX).then_some(w.fetch_ready);
-                    w.ibuf.iter().map(move |e| Self::ready_at(e, smem_now, gmem_now)).chain(fetch)
+                    w.ibuf.iter().map(move |e| Self::ready_at(e, smem_now, gmem_now, launch_now)).chain(fetch)
                 })
                 .filter(|&t| t > now)
                 .min()
@@ -232,7 +238,8 @@ impl MuonCore {
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.unit as usize] += 1;
             if uop.unit == Unit::Launch {
-                // each active lane sends its own entry; the warp carries on
+                // each active lane sends its own entry; the warp carries on.  Its SM issues no other this cycle
+                *launch_free = now + 1;
                 let warp = &self.warps[wid];
                 let i = &uop.inst;
                 let regs = [i.rs1_addr, i.rs2_addr, i.rs3_addr, i.rs4_addr].map(|r| warp.reg_file.read_gpr(r));
