@@ -74,11 +74,13 @@ impl MuonCore {
         smem_base: u32,
         cmd_id: u64,
         cta: CtaId,
+        kernel_pc: u32,
         regs: usize,
     ) {
         for (wid, thread_idxs) in warps {
             self.scheduler.spawn_warp(*wid, pc, thread_idxs.len());
             self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
+            self.warps[*wid].csr_file.kernel_pc = kernel_pc;
             self.warps[*wid].cta = cta;
             self.warps[*wid].regs = regs;
             self.warps[*wid].fetch_ready = 0;

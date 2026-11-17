@@ -17,6 +17,7 @@ pub struct CSRFile {
     pub bp: u32,
     pub smem_base: u32,
     pub cmd_id: u64, // launching command: stream id << 56 | per-stream command id
+    pub kernel_pc: u32, // the kernel this warp's _start jumps to
     fcsr: u32, // frm[7:5] | fflags[4:0]
     acc: u32,  // cisc accelerator
 }
@@ -65,6 +66,7 @@ impl CSRFile {
             0xfca => self.smem_base,
             0xfcb => self.cmd_id as u32,
             0xfcc => (self.cmd_id >> 32) as u32,
+            0xfcd => self.kernel_pc,
             _ => panic!("reading nonexistent csr 0x{:x}", addr),
         }
     }
