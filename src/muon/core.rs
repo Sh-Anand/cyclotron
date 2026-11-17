@@ -10,8 +10,8 @@ use crate::sim::log::Logger;
 use crate::utils::BitSlice;
 use std::sync::Arc;
 
-/// a CTA: (launching command id, block idx), as its warps' CSRs hold
-pub type CtaId = (u64, (u32, u32, u32));
+/// a CTA: the id its launcher gave it, unique among the CTAs running
+pub type CtaId = u64;
 
 pub struct MuonCore {
     conf: MuonConfig,
@@ -73,11 +73,13 @@ impl MuonCore {
         bp: u32,
         smem_base: u32,
         cmd_id: u64,
+        cta: CtaId,
         regs: usize,
     ) {
         for (wid, thread_idxs) in warps {
             self.scheduler.spawn_warp(*wid, pc, thread_idxs.len());
             self.warps[*wid].set_block_threads_bp(block_idx, thread_idxs, bp, smem_base, cmd_id);
+            self.warps[*wid].cta = cta;
             self.warps[*wid].regs = regs;
             self.warps[*wid].fetch_ready = 0;
         }

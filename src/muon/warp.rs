@@ -28,6 +28,7 @@ pub struct Warp {
     pub store_done: u64,         // cycle its last issued global store completes
     pub load_done: u64,          // cycle the last of its issued global loads completes
     pub regs: usize,             // regs per thread allocated to this slot
+    pub cta: CtaId,              // the CTA this slot's warp belongs to
     logger: Arc<Logger>,
 }
 
@@ -65,6 +66,7 @@ impl Warp {
             store_done: 0,
             load_done: 0,
             regs: 0,
+            cta: 0,
             logger: logger.clone(),
         }
     }
@@ -172,8 +174,7 @@ impl Warp {
     }
 
     pub fn cta(&self) -> CtaId {
-        let csrs = &self.csr_file;
-        (csrs.cmd_id, csrs.block_idx)
+        self.cta
     }
 
     pub fn set_block_threads_bp(
