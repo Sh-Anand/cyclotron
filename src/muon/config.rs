@@ -97,6 +97,7 @@ pub enum Unit {
     FpExp,
     Sfu,
     Lsu,
+    Launch,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -118,6 +119,7 @@ pub struct UnitsConfig {
     pub fp_exp: UnitConfig,
     pub sfu: UnitConfig,
     pub lsu: UnitConfig,
+    pub launch: UnitConfig,
 }
 
 impl Default for UnitsConfig {
@@ -132,13 +134,14 @@ impl Default for UnitsConfig {
             fp_exp: u(8, 9),       // FPEX: 6 stages + recomposer
             sfu: u(32, 3),
             lsu: u(32, 10),        // LSU queues, coalescer and writeback; the caches add the rest
+            launch: u(32, 30),     // a grid launch reaching the command processor; the warp does not wait
         }
     }
 }
 
 impl Unit {
-    pub const ALL: [Unit; 8] =
-        [Unit::Alu, Unit::Mul, Unit::Div, Unit::Fp, Unit::FpDivSqrt, Unit::FpExp, Unit::Sfu, Unit::Lsu];
+    pub const ALL: [Unit; 9] =
+        [Unit::Alu, Unit::Mul, Unit::Div, Unit::Fp, Unit::FpDivSqrt, Unit::FpExp, Unit::Sfu, Unit::Lsu, Unit::Launch];
 }
 
 impl UnitsConfig {
@@ -152,6 +155,7 @@ impl UnitsConfig {
             Unit::FpExp => self.fp_exp,
             Unit::Sfu => self.sfu,
             Unit::Lsu => self.lsu,
+            Unit::Launch => self.launch,
         }
     }
 }

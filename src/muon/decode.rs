@@ -65,6 +65,11 @@ impl DecodedInst {
         self.opcode == Opcode::CUSTOM0 && self.f3 == 4 && self.f7 == 0
     }
 
+    /// vx_launch: rs1-rs4 hold a launch entry's four words, and the rd bits the kernel's id
+    pub fn is_launch(&self) -> bool {
+        self.opcode == Opcode::CUSTOM0 && self.f3 == 6 && self.f7 == 0
+    }
+
     /// the functional unit this instruction issues to (branches and jumps use the ALU, as in Muon)
     pub fn unit(&self) -> Unit {
         match self.opcode {
@@ -74,6 +79,7 @@ impl DecodedInst {
             Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_SUB | Opcode::NM_ADD => Unit::Fp,
             Opcode::CUSTOM3 => Unit::FpExp,
             Opcode::LOAD | Opcode::LOAD_FP | Opcode::STORE | Opcode::STORE_FP | Opcode::AMO => Unit::Lsu,
+            Opcode::CUSTOM0 if self.is_launch() => Unit::Launch,
             Opcode::SYSTEM | Opcode::MISC_MEM | Opcode::CUSTOM0 => Unit::Sfu,
             _ => Unit::Alu,
         }
@@ -142,14 +148,14 @@ impl DecodedInst {
             Opcode::CUSTOM0 => HasRegs {
                 rs1: matches!(
                     self.sfu_key(),
-                    0b000_0000000 | 0b001_0000000 | 0b010_0000000 | 0b100_0000000 | 0b101_0000000
+                    0b000_0000000 | 0b001_0000000 | 0b010_0000000 | 0b100_0000000 | 0b101_0000000 | 0b110_0000000
                 ),
                 rs2: matches!(
                     self.sfu_key(),
-                    0b001_0000000 | 0b100_0000000 | 0b101_0000000
+                    0b001_0000000 | 0b100_0000000 | 0b101_0000000 | 0b110_0000000
                 ),
-                rs3: false,
-                rs4: false,
+                rs3: self.is_launch(),
+                rs4: self.is_launch(),
             },
             Opcode::CUSTOM2 => HasRegs {
                 rs1: matches!(

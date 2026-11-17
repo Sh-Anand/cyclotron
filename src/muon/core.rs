@@ -13,6 +13,15 @@ use std::sync::Arc;
 /// a CTA: the id its launcher gave it, unique among the CTAs running
 pub type CtaId = u64;
 
+/// a grid launch a thread issued, on its way to the command processor
+#[derive(Debug, Clone, Copy)]
+pub struct Launch {
+    pub words: [u32; 4], // the launch entry, as the thread's four registers held it
+    pub kernel: u8,
+    pub stream: u8, // of the launching warp
+    pub ready: u64, // cycle it reaches the command processor
+}
+
 pub struct MuonCore {
     conf: MuonConfig,
     last_issued: usize, // round-robin pointer for single issue
@@ -25,6 +34,7 @@ pub struct MuonCore {
     pub l0: usize, // this core's instruction cache
     pub l1: usize, // its SM's cache, the first level for data
     pub wake: u64, // first cycle it could issue or decode anything; a spawn or a barrier release resets it
+    pub launches: Vec<Launch>, // issued here and not yet taken by the command processor
 }
 
 impl MuonCore {
@@ -53,6 +63,7 @@ impl MuonCore {
             l0,
             l1,
             wake: 0,
+            launches: vec![],
         };
 
         info!(
@@ -220,7 +231,15 @@ impl MuonCore {
             // control executes at issue; everything else already executed at decode
             let uop = self.warps[wid].ibuf.remove(i).unwrap();
             self.stats.unit_issued[uop.unit as usize] += 1;
-            if uop.inst.is_control() {
+            if uop.unit == Unit::Launch {
+                // each active lane sends its own entry; the warp carries on
+                let warp = &self.warps[wid];
+                let i = &uop.inst;
+                let regs = [i.rs1_addr, i.rs2_addr, i.rs3_addr, i.rs4_addr].map(|r| warp.reg_file.read_gpr(r));
+                let (stream, kernel) = ((warp.csr_file.cmd_id >> 56) as u8, i.rd_addr);
+                let ready = now + self.conf.passes(Unit::Launch) - 1 + self.conf.units.launch.latency;
+                (self.launches).extend((0..32).filter(|&l| uop.tmask.bit(l)).map(|l| Launch { words: regs.map(|r| r[l]), kernel, stream, ready }));
+            } else if uop.inst.is_control() {
                 self.warps[wid].backend(uop, &mut self.scheduler, smem, gmem)?;
                 if uop.inst.is_barrier() {
                     self.warps[wid].fetch_ready = u64::MAX;
