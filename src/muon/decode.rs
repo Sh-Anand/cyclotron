@@ -57,8 +57,9 @@ impl DecodedInst {
         )
     }
 
+    /// writes memory.  An AMO is timed as a store whose rd, the old value, comes back with it
     pub fn is_store(&self) -> bool {
-        matches!(self.opcode, Opcode::STORE | Opcode::STORE_FP)
+        matches!(self.opcode, Opcode::STORE | Opcode::STORE_FP | Opcode::AMO)
     }
 
     pub fn is_barrier(&self) -> bool {
