@@ -62,6 +62,10 @@ impl DecodedInst {
         matches!(self.opcode, Opcode::STORE | Opcode::STORE_FP | Opcode::AMO)
     }
 
+    pub fn is_amo(&self) -> bool {
+        self.opcode == Opcode::AMO
+    }
+
     pub fn is_barrier(&self) -> bool {
         self.opcode == Opcode::CUSTOM0 && self.f3 == 4 && self.f7 == 0
     }

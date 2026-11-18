@@ -7,6 +7,7 @@ struct Line {
     tag: u64,   // line number
     ready: u64, // cycle its data arrives
     dirty: bool, // only in the level backed by DRAM: the levels above are write-through
+    atomic: u64, // cycle its last atomic finishes
 }
 
 /// One cache level.  All levels live in one array and link to each other by index.
@@ -16,6 +17,7 @@ pub struct Cache {
     prev: Vec<usize>,    // caches whose next level is this one
     lines: Vec<Line>,    // sets × ways, each set newest first
     mshrs: Vec<u64>,     // cycle each frees
+    atomics: Vec<u64>,   // cycle each atomic unit frees; as many as MSHRs
     bus_free: u64,       // cycle the link to the next level frees
     pub free: u64,       // first cycle it can take the next memory op from a core
     pub depth: usize,    // levels below this one before DRAM
@@ -29,8 +31,9 @@ impl Cache {
             conf,
             next,
             prev: vec![],
-            lines: vec![Line { tag: INVALID, ready: 0, dirty: false }; conf.sets * conf.ways],
+            lines: vec![Line { tag: INVALID, ready: 0, dirty: false, atomic: 0 }; conf.sets * conf.ways],
             mshrs: vec![0; conf.mshrs],
+            atomics: vec![0; conf.mshrs],
             bus_free: 0,
             free: 0,
             depth,
@@ -107,6 +110,33 @@ pub fn access(caches: &mut [Cache], i: usize, line: u64, t: u64, write: bool) ->
     caches[i].mshrs[m] = done;
     let set = caches[i].set(line);
     set.rotate_right(1);
-    set[0] = Line { tag: line, ready: done, dirty: write && next.is_none() };
+    set[0] = Line { tag: line, ready: done, dirty: write && next.is_none(), atomic: 0 };
     (accepted, done)
+}
+
+/// an atomic on `line` sent at cycle `t` from cache `i`: the cycle its result is back.  The last level
+/// serves it: atomics on one line run one after another, each holding the line and an atomic unit for
+/// the hit latency.  The levels above are skipped, and the trip back costs what their fills cost.
+pub fn atomic(caches: &mut [Cache], mut i: usize, line: u64, t: u64) -> u64 {
+    let mut back = 0;
+    while let Some(n) = caches[i].next {
+        back += caches[i].conf.miss_latency;
+        i = n;
+    }
+    if caches[i].set(line).iter().all(|l| l.tag != line) {
+        access(caches, i, line, t, true); // fetch the line first
+    } else {
+        caches[i].accesses += 1;
+    }
+    let c = &mut caches[i];
+    let l = c.set(line).iter_mut().find(|l| l.tag == line).unwrap();
+    l.dirty = true;
+    let free = t.max(l.ready).max(l.atomic);
+    // the unit that frees last before then, so one waiting for the line takes over the unit of the one ahead
+    let u = (0..c.atomics.len()).filter(|&u| c.atomics[u] <= free).max_by_key(|&u| c.atomics[u]);
+    let u = u.unwrap_or_else(|| (0..c.atomics.len()).min_by_key(|&u| c.atomics[u]).unwrap());
+    let done = free.max(c.atomics[u]) + c.conf.hit_latency;
+    c.atomics[u] = done;
+    c.set(line).iter_mut().find(|l| l.tag == line).unwrap().atomic = done;
+    done + back
 }

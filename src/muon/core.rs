@@ -267,7 +267,11 @@ impl MuonCore {
                 self.stats.gmem_reqs += uop.gmem as u64;
                 for _ in 0..uop.gmem {
                     let line = self.warps[wid].gmem_lines.pop_front().unwrap();
-                    let (accepted, data) = cache::access(caches, self.l1, line, t, uop.inst.is_store());
+                    let (accepted, data) = if uop.inst.is_amo() {
+                        (t, cache::atomic(caches, self.l1, line, t)) // one per lane, served at the L2
+                    } else {
+                        cache::access(caches, self.l1, line, t, uop.inst.is_store())
+                    };
                     (t, ready) = (accepted + 1, ready.max(data));
                 }
                 caches[self.l1].free = t;

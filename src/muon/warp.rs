@@ -108,7 +108,8 @@ impl Warp {
     }
 
     /// Run a load, store or AMO in each lane of `tmask`.  Returns the lanes that write rd and their data, the
-    /// distinct words in its fullest shared memory bank, and how many distinct global lines it queued.
+    /// distinct words in its fullest shared memory bank, and how many global lines it queued: the distinct ones,
+    /// or for an AMO one per lane.
     fn mem(&mut self, inst: &IssuedInst, tmask: u32, smem: &mut FlatMemory, gmem: &mut FlatMemory) -> ((u32, Lanes), (u8, u8)) {
         let (amo, store) = (inst.opcode == Opcode::AMO, inst.opcode == Opcode::STORE);
         match (inst.opcode, inst.f3, inst.opext) {
@@ -166,7 +167,8 @@ impl Warp {
         let distinct = |bank: &[(usize, u32)]| 1 + bank.windows(2).filter(|w| w[0] != w[1]).count();
         let smem = words[..nw].chunk_by(|a, b| a.0 == b.0).map(distinct).max().unwrap_or(0) as u8;
         let mut gmem = 0;
-        for i in (0..nl).filter(|&i| smem == 0 && (i == 0 || lines[i] != lines[i - 1])) {
+        // an atomic sends each lane on its own: every lane put its line in twice, so every other entry
+        for i in (0..nl).filter(|&i| smem == 0 && if amo { i % 2 == 0 } else { i == 0 || lines[i] != lines[i - 1] }) {
             self.gmem_lines.push_back(lines[i]);
             gmem += 1;
         }
