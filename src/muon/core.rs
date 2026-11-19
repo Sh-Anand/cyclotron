@@ -216,7 +216,11 @@ impl MuonCore {
         caches: &mut [Cache],
     ) -> Result<(), ExecErr> {
         // asleep until `wake`: nothing a warp here waits on can complete before then
-        let awake = now >= self.wake;
+        if now < self.wake {
+            self.stall(1);
+            return Ok(());
+        }
+        let awake = true;
         let active = self.scheduler.active_warp_mask();
         for w in (0..self.conf.num_warps).filter(|&w| awake && active.bit(w)) {
             self.refill(w, now, smem, gmem, caches)?;
@@ -285,14 +289,21 @@ impl MuonCore {
                 self.warps[wid].reg_ready[rd] = done;
             }
             Self::set_ready(&mut self.warps[wid], i);
-        } else if self.warps.iter().any(|w| !w.ibuf.is_empty()) {
-            self.stats.stall_deps += 1;
-        } else if self.warps.iter().any(|w| w.fetch_ready == u64::MAX) {
-            self.stats.stall_barrier += 1;
         } else {
-            self.stats.stall_fetch += 1;
+            self.stall(1);
         }
         Ok(())
+    }
+
+    /// count `n` cycles in which the core issued nothing; what it waits on does not change while it sleeps
+    pub fn stall(&mut self, n: u64) {
+        if self.warps.iter().any(|w| !w.ibuf.is_empty()) {
+            self.stats.stall_deps += n;
+        } else if self.warps.iter().any(|w| w.fetch_ready == u64::MAX) {
+            self.stats.stall_barrier += n;
+        } else {
+            self.stats.stall_fetch += n;
+        }
     }
 
 }
