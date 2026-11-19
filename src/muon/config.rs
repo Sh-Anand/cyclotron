@@ -94,6 +94,8 @@ pub enum Unit {
     Div,
     Fp,
     FpDivSqrt,
+    FpH,
+    FpHDivSqrt,
     FpExp,
     Sfu,
     Lsu,
@@ -116,6 +118,8 @@ pub struct UnitsConfig {
     pub div: UnitConfig,
     pub fp: UnitConfig,
     pub fp_divsqrt: UnitConfig,
+    pub fp_h: UnitConfig,
+    pub fp_h_divsqrt: UnitConfig,
     pub fp_exp: UnitConfig,
     pub sfu: UnitConfig,
     pub lsu: UnitConfig,
@@ -131,6 +135,9 @@ impl Default for UnitsConfig {
             div: u(32, 37),        // rocket MulDiv, divUnroll = 1: 32 iterations + sign fixup + 2
             fp: u(16, 5),          // CVFPU addmul/noncomp/conv: 2 pipe regs + recomposer
             fp_divsqrt: u(4, 16),  // CVFPU PULP divsqrt, 3 iteration units: ~9 iterations + pre/post + 2 pipe regs
+            // bf16 (the .h instructions) runs in the same CVFPU datapaths, two lanes in each fp32 lane
+            fp_h: u(32, 5),
+            fp_h_divsqrt: u(8, 11), // ~4 iterations
             fp_exp: u(8, 9),       // FPEX: 6 stages + recomposer
             sfu: u(32, 3),
             lsu: u(32, 10),        // LSU queues, coalescer and writeback; the caches add the rest
@@ -140,8 +147,10 @@ impl Default for UnitsConfig {
 }
 
 impl Unit {
-    pub const ALL: [Unit; 9] =
-        [Unit::Alu, Unit::Mul, Unit::Div, Unit::Fp, Unit::FpDivSqrt, Unit::FpExp, Unit::Sfu, Unit::Lsu, Unit::Launch];
+    pub const ALL: [Unit; 11] = [
+        Unit::Alu, Unit::Mul, Unit::Div, Unit::Fp, Unit::FpDivSqrt, Unit::FpH, Unit::FpHDivSqrt, Unit::FpExp, Unit::Sfu,
+        Unit::Lsu, Unit::Launch,
+    ];
 }
 
 impl UnitsConfig {
@@ -152,6 +161,8 @@ impl UnitsConfig {
             Unit::Div => self.div,
             Unit::Fp => self.fp,
             Unit::FpDivSqrt => self.fp_divsqrt,
+            Unit::FpH => self.fp_h,
+            Unit::FpHDivSqrt => self.fp_h_divsqrt,
             Unit::FpExp => self.fp_exp,
             Unit::Sfu => self.sfu,
             Unit::Lsu => self.lsu,

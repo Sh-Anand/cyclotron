@@ -80,8 +80,18 @@ impl DecodedInst {
         match self.opcode {
             Opcode::OP if self.f7 == 1 && self.f3 < 4 => Unit::Mul, // mul, mulh, mulhsu, mulhu
             Opcode::OP if self.f7 == 1 => Unit::Div,                // div, divu, rem, remu
-            Opcode::OP_FP if matches!(self.f7 >> 2, 0b00011 | 0b01011) => Unit::FpDivSqrt, // fdiv, fsqrt
-            Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_SUB | Opcode::NM_ADD => Unit::Fp,
+            Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_SUB | Opcode::NM_ADD => {
+                let divsqrt = self.opcode == Opcode::OP_FP && matches!(self.f7 >> 2, 0b00011 | 0b01011); // fdiv, fsqrt
+                // .h, but for the conversions (fcvt.h.s, fcvt.w.h, fcvt.h.w), which use the fp32 lanes as in Muon
+                let half = self.f7 & 3 == 0b10
+                    && !(self.opcode == Opcode::OP_FP && matches!(self.f7 >> 2, 0b01000 | 0b11000 | 0b11010));
+                match (half, divsqrt) {
+                    (false, false) => Unit::Fp,
+                    (false, true) => Unit::FpDivSqrt,
+                    (true, false) => Unit::FpH,
+                    (true, true) => Unit::FpHDivSqrt,
+                }
+            }
             Opcode::CUSTOM3 => Unit::FpExp,
             Opcode::LOAD | Opcode::LOAD_FP | Opcode::STORE | Opcode::STORE_FP | Opcode::AMO => Unit::Lsu,
             Opcode::CUSTOM0 if self.is_launch() => Unit::Launch,

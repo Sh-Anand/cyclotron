@@ -178,17 +178,23 @@ impl ExecuteUnit {
             }
         }
 
-        fn bf16_op(a: u32, b: u32, op: fn(bf16, bf16) -> bf16) -> u32 {
-            let result = op(
-                bf16::from_bits((a & 0xffff) as u16),
-                bf16::from_bits((b & 0xffff) as u16),
-            )
-            .to_bits();
+        // a bf16 result in its register: sign-extended from its 16 bits
+        fn bf16_bits(x: bf16) -> u32 {
+            let result = x.to_bits();
             if [0xffc0, 0x7fff, 0xffff].contains(&result) {
                 0x7fc0 // canonical qNaN in bfloat16 encoding
             } else {
                 sign_ext::<16>(result as u32) as u32
             }
+        }
+
+        // every bf16 is an f32 whose low 16 bits are zero
+        fn bf16_to_f32(a: u32) -> f32 {
+            bf16::from_bits(a as u16).to_f32()
+        }
+
+        fn bf16_op(a: u32, b: u32, op: fn(bf16, bf16) -> bf16) -> u32 {
+            bf16_bits(op(bf16::from_bits(a as u16), bf16::from_bits(b as u16)))
         }
 
         fn fp32_op_3(a: u32, b: u32, c: u32, op: fn(f32, f32, f32) -> f32) -> u32 {
@@ -201,17 +207,33 @@ impl ExecuteUnit {
         }
 
         fn bf16_op_3(a: u32, b: u32, c: u32, op: fn(bf16, bf16, bf16) -> bf16) -> u32 {
-            let result = op(
-                bf16::from_bits((a & 0xffff) as u16),
-                bf16::from_bits((b & 0xffff) as u16),
-                bf16::from_bits((c & 0xffff) as u16),
-            )
-            .to_bits();
-            if [0xffc0, 0x7fff, 0xffff].contains(&result) {
-                0x7fc0 // canonical qNaN in bfloat16 encoding
-            } else {
-                sign_ext::<16>(result as u32) as u32
-            }
+            bf16_bits(op(bf16::from_bits(a as u16), bf16::from_bits(b as u16), bf16::from_bits(c as u16)))
+        }
+
+        fn bf16_cmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
+            op(bf16_to_f32(a), bf16_to_f32(b)) as u32
+        }
+
+        // `a` with sign bit `sign`, which is 0 or 0x8000
+        fn bf16_fsgn(a: u32, sign: u32) -> u32 {
+            sign_ext::<16>(a & 0x7fff | sign) as u32
+        }
+
+        fn bf16_fclass(a: u32) -> u32 {
+            let f = bf16_to_f32(a);
+            let conds = [
+                f == f32::NEG_INFINITY,
+                f < 0f32 && f.is_normal(),
+                f < 0f32 && f.is_subnormal(),
+                f == 0f32 && f.is_sign_negative(),
+                f == 0f32 && f.is_sign_positive(),
+                f > 0f32 && f.is_subnormal(),
+                f > 0f32 && f.is_normal(),
+                f == f32::INFINITY,
+                f.is_nan() && !a.bit(6), // signalling: the top mantissa bit is clear
+                f.is_nan(),
+            ];
+            (1 << conds.iter().position(|&c| c).unwrap()) as u32
         }
 
         fn fp32_cmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
@@ -300,6 +322,13 @@ impl ExecuteUnit {
                 0b001_1010000u16 => |[a, b]| { fp32_cmp_op(a, b, |x, y| { x < y }) }, // flt.s
                 0b000_1010000u16 => |[a, b]| { fp32_cmp_op(a, b, |x, y| { x <= y }) }, // fle.s
                 0b001_1110000u16 => |[a, _b]| { fp32_fclass(a) }, // fclass.s
+                0b000_0010010u16 => |[a, b]| { bf16_fsgn(a, b & 0x8000) }, // fsgnj.h
+                0b001_0010010u16 => |[a, b]| { bf16_fsgn(a, !b & 0x8000) }, // fsgnjn.h
+                0b010_0010010u16 => |[a, b]| { bf16_fsgn(a, (a ^ b) & 0x8000) }, // fsgnjx.h
+                0b010_1010010u16 => |[a, b]| { bf16_cmp_op(a, b, |x, y| { x == y }) }, // feq.h
+                0b001_1010010u16 => |[a, b]| { bf16_cmp_op(a, b, |x, y| { x < y }) }, // flt.h
+                0b000_1010010u16 => |[a, b]| { bf16_cmp_op(a, b, |x, y| { x <= y }) }, // fle.h
+                0b001_1110010u16 => |[a, _b]| { bf16_fclass(a) }, // fclass.h
                 _ => return None,
             };
             Some(op)
@@ -314,6 +343,7 @@ impl ExecuteUnit {
                 0b0101100u8 => |[a, b, _rs2_addr, _rm]| { fp32_op(a, b, |x, _y| { x.sqrt() }) }, // fsqrt.s
                 0b1100000u8 => |[a, _b, rs2_addr, rm]| { fp32_fcvt_saturate(a, rs2_addr > 0, rm) }, // fcvt.*.s
                 0b1101000u8 => |[a, _b, rs2_addr, _rm]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }, // fcvt.s.*
+                0b0100000u8 => |[a, _b, _rs2_addr, _rm]| { let f = bf16_to_f32(a); if f.is_nan() { 0x7fc00000 } else { f.to_bits() } }, // fcvt.s.h
                 _ => return None,
             };
             Some(op)
@@ -326,6 +356,10 @@ impl ExecuteUnit {
                 0b0001000u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x * y }) }, // fmul.h
                 0b0001100u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, y| { x / y }) }, // fdiv.h
                 0b0101100u8 => |[a, b, _rs2_addr, _rm]| { bf16_op(a, b, |x, _y| { bf16::from_f32(x.to_f32().sqrt()) }) }, // fsqrt.h
+                0b0100000u8 => |[a, _b, _rs2_addr, _rm]| { bf16_bits(bf16::from_f32(f32::from_bits(a))) }, // fcvt.h.s
+                0b1100000u8 => |[a, _b, rs2_addr, rm]| { fp32_fcvt_saturate(bf16_to_f32(a).to_bits(), rs2_addr > 0, rm) }, // fcvt.w.h, fcvt.wu.h
+                // through f64, which holds every 32-bit integer, so the result is rounded once
+                0b1101000u8 => |[a, _b, rs2_addr, _rm]| { bf16_bits(bf16::from_f64(if rs2_addr > 0 { a as f64 } else { a as i32 as f64 })) }, // fcvt.h.w, fcvt.h.wu
                 _ => return None,
             };
             Some(op)
