@@ -85,8 +85,9 @@ impl Default for GmemConfig {
     }
 }
 
-/// Functional units; all are fully pipelined.  An instruction occupies its unit for
-/// ceil(num_lanes / lanes) cycles, and its rd is ready `latency` cycles after the last of them.
+/// Functional units, one of each per core.  An instruction occupies its unit for ceil(num_lanes / lanes)
+/// cycles, and its rd is ready `latency` cycles after the last of them.  All are fully pipelined but the
+/// matrix multiply, which takes an instruction only every `interval` cycles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
     Alu,
@@ -100,12 +101,19 @@ pub enum Unit {
     Sfu,
     Lsu,
     Launch,
+    Mma,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub struct UnitConfig {
     pub lanes: usize,
     pub latency: u64, // issue to dependent issue
+    #[serde(default = "every_cycle")]
+    pub interval: u64, // cycles from one instruction's issue until the unit takes the next
+}
+
+fn every_cycle() -> u64 {
+    1
 }
 
 /// Defaults follow Muon's RTL for a 32-lane warp: unit widths from the Configs builder,
@@ -124,11 +132,12 @@ pub struct UnitsConfig {
     pub sfu: UnitConfig,
     pub lsu: UnitConfig,
     pub launch: UnitConfig,
+    pub mma: UnitConfig,
 }
 
 impl Default for UnitsConfig {
     fn default() -> Self {
-        let u = |lanes, latency| UnitConfig { lanes, latency };
+        let u = |lanes, latency| UnitConfig { lanes, latency, interval: 1 };
         Self {
             alu: u(32, 3),         // rocket ALU, recomposer register
             mul: u(32, 4),         // a pipelined multiplier; the RTL's iterative one takes 36
@@ -142,14 +151,17 @@ impl Default for UnitsConfig {
             sfu: u(32, 3),
             lsu: u(32, 10),        // LSU queues, coalescer and writeback; the caches add the rest
             launch: u(32, 30),     // a grid launch reaching the command processor; the warp does not wait
+            // vx_mma: 2048 multiply-adds every 16 cycles is 4 times what fmadd reaches at one a cycle.  Nvidia's
+            // tensor cores are 2 times their fp32 lanes on an RTX 5090 and 16 times on an A100; 27 is their latency
+            mma: UnitConfig { lanes: 32, latency: 27, interval: 16 },
         }
     }
 }
 
 impl Unit {
-    pub const ALL: [Unit; 11] = [
+    pub const ALL: [Unit; 12] = [
         Unit::Alu, Unit::Mul, Unit::Div, Unit::Fp, Unit::FpDivSqrt, Unit::FpH, Unit::FpHDivSqrt, Unit::FpExp, Unit::Sfu,
-        Unit::Lsu, Unit::Launch,
+        Unit::Lsu, Unit::Launch, Unit::Mma,
     ];
 }
 
@@ -167,6 +179,7 @@ impl UnitsConfig {
             Unit::Sfu => self.sfu,
             Unit::Lsu => self.lsu,
             Unit::Launch => self.launch,
+            Unit::Mma => self.mma,
         }
     }
 }

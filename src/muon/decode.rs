@@ -75,6 +75,11 @@ impl DecodedInst {
         self.opcode == Opcode::CUSTOM0 && self.f3 == 6 && self.f7 == 0
     }
 
+    /// vx_mma, the warp matrix multiply: rs1, rs2, rs3 and rd each name the first register of a matrix's run
+    pub fn is_mma(&self) -> bool {
+        self.opcode == Opcode::CUSTOM1 && self.f3 == 2
+    }
+
     /// the functional unit this instruction issues to (branches and jumps use the ALU, as in Muon)
     pub fn unit(&self) -> Unit {
         match self.opcode {
@@ -95,6 +100,7 @@ impl DecodedInst {
             Opcode::CUSTOM3 => Unit::FpExp,
             Opcode::LOAD | Opcode::LOAD_FP | Opcode::STORE | Opcode::STORE_FP | Opcode::AMO => Unit::Lsu,
             Opcode::CUSTOM0 if self.is_launch() => Unit::Launch,
+            Opcode::CUSTOM1 if self.is_mma() => Unit::Mma,
             Opcode::SYSTEM | Opcode::MISC_MEM | Opcode::CUSTOM0 => Unit::Sfu,
             _ => Unit::Alu,
         }
@@ -109,13 +115,21 @@ impl DecodedInst {
         (!no_rd && self.rd_addr != 0).then_some(self.rd_addr as usize)
     }
 
-    /// source registers, without x0
+    /// how many registers it writes from rd on
+    pub fn rd_run(&self) -> usize {
+        if self.is_mma() { 4 } else { 1 }
+    }
+
+    /// source registers, without x0.  vx_mma reads a run from each of its three: A's four, B's two, C's four
     pub fn rs(&self) -> impl Iterator<Item = usize> {
         let h = self.has_regs();
+        let runs = if self.is_mma() { [4, 2, 4, 0] } else { [1; 4] };
         [(h.rs1, self.rs1_addr), (h.rs2, self.rs2_addr), (h.rs3, self.rs3_addr), (h.rs4, self.rs4_addr)]
             .into_iter()
-            .filter(|&(used, r)| used && r != 0)
-            .map(|(_, r)| r as usize)
+            .zip(runs)
+            .filter(|&((used, _), _)| used)
+            .flat_map(|((_, r), run)| r as usize..r as usize + run)
+            .filter(|&r| r != 0)
     }
 
     pub fn has_regs(&self) -> HasRegs {
@@ -181,6 +195,7 @@ impl DecodedInst {
                 rs3: false,
                 rs4: false,
             },
+            Opcode::CUSTOM1 if self.is_mma() => HasRegs { rs1: true, rs2: true, rs3: true, rs4: false },
             Opcode::CUSTOM3 => HasRegs {
                 rs1: true,
                 rs2: false,
@@ -218,11 +233,24 @@ pub struct MicroOp {
     pub inst: DecodedInst,
     pub tmask: u32,
     pub rd: Option<usize>, // `inst.rd()`
-    pub rs: [usize; 4],    // `inst.rs()`; unused slots are 0, which is never a destination
+    pub rd_run: usize,     // `inst.rd_run()`: it writes this many registers from rd on
+    pub rs: [usize; 10],   // `inst.rs()`, then 0s; 0 is never a destination
     pub unit: Unit,        // `inst.unit()`
     pub ready: u64,        // cycle it can issue once its memory is free; u64::MAX while an older ibuf entry blocks it
     pub smem: u8, // shared memory request: distinct words in its fullest bank; 0 if not one
     pub gmem: u8, // global memory request: its lines waiting in `Warp::gmem_lines`
+}
+
+impl MicroOp {
+    /// the registers it writes
+    pub fn dests(&self) -> std::ops::Range<usize> {
+        self.rd.map_or(0..0, |rd| rd..rd + self.rd_run)
+    }
+
+    /// the registers it reads
+    pub fn srcs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.rs.iter().copied().take_while(|&r| r != 0)
+    }
 }
 
 impl std::fmt::Display for DecodedInst {

@@ -3,7 +3,7 @@ use crate::info;
 use crate::muon::config::{MuonConfig, Unit};
 use crate::muon::core::CtaId;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{sign_ext, DecodeUnit, IssuedInst, Lanes, MicroOp, RegFile};
+use crate::muon::decode::{sign_ext, DecodeUnit, DecodedInst, IssuedInst, Lanes, MicroOp, RegFile};
 use crate::muon::execute::{ExecuteUnit, Opcode};
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::flat_mem::FlatMemory;
@@ -76,9 +76,46 @@ impl Warp {
         let inst = u64::from_le_bytes(gmem.read_n::<8>(schedule.pc as usize).expect("failed to fetch instruction"));
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
-        let mut rs = [0; 4];
+        let mut rs = [0; 10];
         zip(&mut rs, inst.rs()).for_each(|(s, r)| *s = r);
-        MicroOp { inst, tmask: schedule.mask, rd: inst.rd(), rs, unit: inst.unit(), ready: u64::MAX, smem: 0, gmem: 0 }
+        let (rd, rd_run) = (inst.rd(), inst.rd_run());
+        MicroOp { inst, tmask: schedule.mask, rd, rd_run, rs, unit: inst.unit(), ready: u64::MAX, smem: 0, gmem: 0 }
+    }
+
+    /// vx_mma.bf16: D = A * B + C by the whole warp.  A is 16x16 and B 16x8 in bf16, two elements to a register
+    /// with the first in its low half; C and D are 16x8 in fp32.  rs1, rs2, rs3 and rd name the first of A's
+    /// four registers, B's two, C's four and D's four.  Each lane holds a share of every matrix as in Nvidia's
+    /// mma.m16n8k16; with g = lane / 4 and t = lane % 4, register r of
+    ///   A holds row g + 8 * (r % 2), columns 2t and 2t + 1, 8 further on for r >= 2
+    ///   B holds column g, rows 2t and 2t + 1, 8 further on for r = 1
+    ///   C and D holds row g + 8 * (r / 2), column 2t + r % 2
+    /// An element of D is its C plus the sixteen products, each exact in fp32, added in order of k
+    fn mma(&mut self, inst: &DecodedInst, tmask: u32) {
+        assert!(inst.f7 & 3 == 0, "unimplemented vx_mma format {}", inst.f7 & 3);
+        fn run<const N: usize>(rf: &RegFile, first: u8) -> [Lanes; N] {
+            std::array::from_fn(|r| rf.read_gpr(first + r as u8))
+        }
+        let rf = &self.reg_file;
+        let (ra, rb, rc): ([Lanes; 4], [Lanes; 2], [Lanes; 4]) = (run(rf, inst.rs1_addr), run(rf, inst.rs2_addr), run(rf, inst.rs3_addr));
+        let bf16 = |word: u32, half: usize| f32::from_bits(word >> (16 * half) << 16);
+        let (mut a, mut b) = ([[0f32; 16]; 16], [[0f32; 8]; 16]);
+        for (lane, half) in (0..32).flat_map(|lane| [(lane, 0), (lane, 1)]) {
+            let (g, t) = (lane / 4, lane % 4);
+            for r in 0..4 {
+                a[g + 8 * (r % 2)][2 * t + half + 8 * (r / 2)] = bf16(ra[r][lane], half);
+            }
+            for r in 0..2 {
+                b[2 * t + half + 8 * r][g] = bf16(rb[r][lane], half);
+            }
+        }
+        for r in 0..4 {
+            let mut rd = [0; 32];
+            for lane in 0..32 {
+                let (row, col) = (lane / 4 + 8 * (r / 2), 2 * (lane % 4) + r % 2);
+                rd[lane] = (0..16).fold(f32::from_bits(rc[r][lane]), |sum, k| sum + a[row][k] * b[k][col]).to_bits();
+            }
+            self.reg_file.write_gpr(inst.rd_addr + r as u8, tmask, &rd);
+        }
     }
 
     /// Execute `uop` functionally: read its operands, execute it, serve its memory requests and
@@ -97,6 +134,9 @@ impl Warp {
             let issued = ExecuteUnit::collect(&uop.inst, &self.reg_file);
             let ((mask, rd_data), counts) = if uop.unit == Unit::Lsu {
                 self.mem(&issued, tmask, smem, gmem)
+            } else if uop.unit == Unit::Mma {
+                self.mma(&uop.inst, tmask); // writes its four registers itself
+                ((0, [0; 32]), (0, 0))
             } else {
                 (ExecuteUnit::execute(&issued, wid, tmask, &mut self.csr_file, scheduler), (0, 0))
             };
